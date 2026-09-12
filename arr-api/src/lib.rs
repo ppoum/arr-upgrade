@@ -6,17 +6,23 @@ use thiserror::Error;
 
 pub mod radarr;
 
-pub(crate) trait RequestPayload {
+pub(crate) trait RequestPayload: Clone {
     fn add_to_request(&self, request_builder: RequestBuilder) -> RequestBuilder;
 }
 
-#[expect(unused)]
-pub(crate) struct Json<T>(pub T);
+#[derive(Clone)]
+pub(crate) struct Json<T: Serialize + Clone>(pub T);
 
-impl<T: Serialize> RequestPayload for Json<T> {
+impl<T: Serialize + Clone> RequestPayload for Json<T> {
     #[inline]
     fn add_to_request(&self, request_builder: RequestBuilder) -> RequestBuilder {
         request_builder.json(&self.0)
+    }
+}
+
+impl<T: Serialize + Clone> From<T> for Json<T> {
+    fn from(value: T) -> Self {
+        Self(value)
     }
 }
 
@@ -45,7 +51,7 @@ pub(crate) trait ArrRequest {
     const METHOD: reqwest::Method;
 
     fn to_url(&self) -> Cow<'_, str>;
-    fn params(&self) -> &Self::Params;
+    fn params(&self) -> Cow<'_, Self::Params>;
 }
 
 pub(crate) trait Client {
@@ -58,6 +64,8 @@ pub enum ArrError {
     Unauthorized,
     #[error("unsupported API version: {0}")]
     UnsupportedApiVersion(String),
+    #[error("timed out")]
+    Timeout,
     #[error("error sending request: {0}")]
     Http(#[from] reqwest::Error),
 }

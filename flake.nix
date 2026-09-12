@@ -26,9 +26,15 @@
     in
     {
       devShells.${system}.default = pkgs.mkShell {
-        packages = with pkgs; [ rust-bin.stable.${rustVersion}.complete ];
+        packages = with pkgs; [
+          rust-bin.stable.${rustVersion}.complete
+          cargo-nextest
+          sqlx-cli
+        ];
         shellHook = ''
           export ARR_UPGRADE_CONFIG="./config/"
+          # for sqlx-cli
+          export DATABASE_URL=sqlite://./config/arr_upgrade.db
         '';
       };
     };

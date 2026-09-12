@@ -1,11 +1,16 @@
+use std::time::{Duration, Instant};
+
 use reqwest::StatusCode;
 
 use crate::{
     ArrError, Client, RequestPayloadExt,
-    radarr::api::{AllMovies, ApiInfo, ApiInfoResponse, Movie},
+    radarr::api::{
+        AllMovies, ApiInfo, ApiInfoResponse, CommandInfo, CommandInfoRequest, CommandResult,
+        CommandStatus, Movie, MoviesSearch, RadarrJobId,
+    },
 };
 
-mod api;
+pub mod api;
 
 const SUPPORTED_API_VERSION: &str = "v3";
 
@@ -21,7 +26,7 @@ impl Client for RadarrClient {
         let builder = client
             .request(R::METHOD, full_url)
             .header("X-Api-Key", &self.api_key)
-            .arr_params(request.params());
+            .arr_params(request.params().as_ref());
 
         let response = builder.send().await?;
 
@@ -55,5 +60,38 @@ impl RadarrClient {
 
     pub async fn list_movies(&self) -> Result<Vec<Movie>, ArrError> {
         self.send(AllMovies).await
+    }
+
+    pub async fn search_movies(&self, ids: Vec<u32>) -> Result<RadarrJobId, ArrError> {
+        let request = MoviesSearch { ids };
+        let response = self.send(request).await?;
+        Ok(RadarrJobId(response.id))
+    }
+
+    pub async fn get_command_info(&self, id: RadarrJobId) -> Result<CommandInfo, ArrError> {
+        self.send(CommandInfoRequest { id }).await
+    }
+
+    /// Blocks until the command's status becomes `Completed`. Returns the [CommandResult].
+    pub async fn wait_for_command_completed(
+        &self,
+        id: RadarrJobId,
+        timeout: Option<Duration>,
+    ) -> Result<CommandResult, ArrError> {
+        const FREQ: Duration = Duration::from_secs(1);
+        let start = Instant::now();
+        loop {
+            if let Some(timeout) = timeout
+                && (Instant::now() - start) >= timeout
+            {
+                return Err(ArrError::Timeout);
+            }
+
+            let info = self.get_command_info(id).await?;
+            if matches!(info.status, CommandStatus::Completed) {
+                return Ok(info.result);
+            }
+            tokio::time::sleep(FREQ).await;
+        }
     }
 }
