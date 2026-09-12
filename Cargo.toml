@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["arr-api","arr-upgrade"]
