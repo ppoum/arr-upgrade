@@ -1,13 +1,19 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 use anyhow::Context;
 use arr_api::radarr::RadarrClient;
 
 mod config;
 
+const CONFIG_DIR_ENVVAR: &str = "ARR_UPGRADE_CONFIG";
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let config = config::load_config()?;
+    let config_dir = std::env::var(CONFIG_DIR_ENVVAR)
+        .with_context(|| format!("failed to read config directory from {CONFIG_DIR_ENVVAR}"))?;
+
+    let config_file_path = PathBuf::from(config_dir.clone()).join("config.toml");
+    let config = config::load_config(config_file_path)?;
 
     let radarr_clients: HashMap<String, RadarrClient> = config
         .radarr

@@ -3,8 +3,6 @@ use std::{collections::HashMap, path::Path};
 use anyhow::Context;
 use serde::Deserialize;
 
-const CONFIG_PATH_ENVVAR: &str = "ARR_UPGRADE_CONFIG";
-
 #[derive(Debug, Deserialize)]
 pub struct ArrService {
     pub url: String,
@@ -17,24 +15,18 @@ pub struct Config {
     pub radarr: HashMap<String, ArrService>,
 }
 
-pub fn load_config() -> anyhow::Result<Config> {
-    let path = std::env::var(CONFIG_PATH_ENVVAR)
-        .with_context(|| format!("failed to read path from {CONFIG_PATH_ENVVAR}"))?;
-    load_config_from_path(path)
-}
-
-fn load_config_from_path(path: impl AsRef<Path>) -> anyhow::Result<Config> {
+pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
     let contents = std::fs::read(path).with_context(|| "failed to read config")?;
     toml::from_slice(&contents).with_context(|| "failed to parse config")
 }
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     use std::io::{self, Write};
 
     use tempfile::NamedTempFile;
-
-    use crate::config::load_config_from_path;
 
     fn create_config(contents: String) -> io::Result<NamedTempFile> {
         let mut file = tempfile::NamedTempFile::new()?;
@@ -45,7 +37,7 @@ mod tests {
     #[test]
     fn config_can_parse_empty() {
         let file = create_config("".to_owned()).unwrap();
-        load_config_from_path(file.path()).expect("parsing shouldn't fail");
+        load_config(file.path()).expect("parsing shouldn't fail");
     }
 
     /// Ensure no regression in config parsing
@@ -65,7 +57,7 @@ mod tests {
         )
         .unwrap();
 
-        let config = load_config_from_path(file.path()).expect("parsing shouldn't fail");
+        let config = load_config(file.path()).expect("parsing shouldn't fail");
         let radarr = config.radarr;
         assert_eq!(radarr.len(), 2);
         let one = radarr

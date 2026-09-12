@@ -28,7 +28,7 @@
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [ rust-bin.stable.${rustVersion}.complete ];
         shellHook = ''
-          export ARR_UPGRADE_CONFIG="./config.toml"
+          export ARR_UPGRADE_CONFIG="./config/"
         '';
       };
     };
