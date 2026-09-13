@@ -1,3 +1,0 @@
-[radarr.foo]
-url = "http://127.0.0.1:7878"
-api_key = "1234567890abcdef"

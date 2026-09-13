@@ -29,7 +29,7 @@ pub async fn start_db(url: String) -> anyhow::Result<DatabaseActor> {
         .create_if_missing(true);
     let pool = SqlitePool::connect_with(connection_options).await?;
 
-    println!("TMP: Running migrations");
+    log::info!("Running migrations");
     sqlx::migrate!("./migrations/")
         .run(&pool)
         .await

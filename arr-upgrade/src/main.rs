@@ -1,13 +1,13 @@
-use std::{collections::HashMap, path::PathBuf, time::Duration};
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::Context;
-use arr_api::{ArrError, radarr::RadarrClient};
-use rand::seq::SliceRandom;
+use arr_api::radarr::RadarrClient;
 
-use crate::db::DatabaseActorMethods;
+use crate::radarr::start_radarr_handler;
 
 mod config;
 mod db;
+mod radarr;
 
 const CONFIG_DIR_ENVVAR: &str = "ARR_UPGRADE_CONFIG";
 
@@ -23,55 +23,17 @@ async fn main() -> anyhow::Result<()> {
     let config_file_path = PathBuf::from(config_dir.clone()).join("config.toml");
     let config = config::load_config(config_file_path)?;
 
-    let radarr_clients: HashMap<String, RadarrClient> = config
-        .radarr
-        .into_iter()
-        .map(|(key, config)| (key, RadarrClient::new(config.url, config.api_key)))
-        .collect();
-
-    for (name, client) in radarr_clients {
-        client
-            .check()
-            .await
-            .with_context(|| "error connecting to radarr")?;
-
-        let mut movies = client
-            .list_movies()
-            .await
-            .with_context(|| "failed to list all movies")?;
-
-        // TMP: take 10 random movies and add to db
-        movies.shuffle(&mut rand::rng());
-        let movies: Vec<_> = movies.into_iter().take(10).collect();
-        db_actor.sync_media(name.clone(), movies).await;
-
-        if let Some(oldest) = db_actor.get_oldest_movies(name.clone(), 5).await {
-            log::info!("Oldest movies are: {oldest:?}");
-            if let Some(m) = oldest.first() {
-                log::info!("TMP: Starting search for {m}");
-                let id = match client.search_movies(vec![*m]).await {
-                    Ok(i) => i,
-                    Err(e) => {
-                        log::warn!("TMP err: {e}");
-                        continue;
-                    }
-                };
-                log::info!("Started job with id {}", id.0);
-                match client
-                    .wait_for_command_completed(id, Some(Duration::from_secs(60)))
-                    .await
-                {
-                    Ok(r) => {
-                        log::info!("Job completed with: {r}");
-                        db_actor.mark_movies_checked(name, vec![*m]).await;
-                    }
-                    Err(ArrError::Timeout) => log::warn!("Timed out waiting for job"),
-                    Err(e) => log::error!("Unexpected error: {e}"),
-                }
-            }
-        } else {
-            log::error!("Error fetching movies from db");
-        }
+    for (name, instance) in config.get_radarr_instances() {
+        let client = RadarrClient::new(instance.url, instance.api_key);
+        start_radarr_handler(
+            name,
+            client,
+            db_actor.clone(),
+            instance.count,
+            instance.frequency,
+        )
+        .await
+        .with_context(|| "failed to start radarr instance")?;
     }
     loop {
         tokio::time::sleep(Duration::from_secs(60)).await;

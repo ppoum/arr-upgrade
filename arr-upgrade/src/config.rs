@@ -3,16 +3,73 @@ use std::{collections::HashMap, path::Path};
 use anyhow::Context;
 use serde::Deserialize;
 
-#[derive(Debug, Deserialize)]
-pub struct ArrService {
+#[derive(Debug, Deserialize, Clone)]
+struct ThinArrInstance {
     pub url: String,
     pub api_key: String,
+    pub frequency: Option<String>,
+    pub count: Option<u32>,
+}
+
+pub struct ArrInstance {
+    pub url: String,
+    pub api_key: String,
+    pub frequency: String,
+    pub count: u32,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
     #[serde(default)]
-    pub radarr: HashMap<String, ArrService>,
+    default: DefaultSection,
+    #[serde(default)]
+    radarr: HashMap<String, ThinArrInstance>,
+}
+
+/// `[default]` section of the toml config file
+#[derive(Debug, Deserialize)]
+struct DefaultSection {
+    #[serde(default = "config_default_frequency")]
+    frequency: String,
+    #[serde(default = "config_default_count")]
+    count: u32,
+}
+
+impl Default for DefaultSection {
+    fn default() -> Self {
+        Self {
+            frequency: config_default_frequency(),
+            count: config_default_count(),
+        }
+    }
+}
+
+impl Config {
+    pub fn get_radarr_instances(&self) -> HashMap<String, ArrInstance> {
+        self.radarr
+            .clone()
+            .into_iter()
+            .map(|(key, thin)| {
+                let full_instance = ArrInstance {
+                    url: thin.url,
+                    api_key: thin.api_key,
+                    frequency: thin
+                        .frequency
+                        .unwrap_or_else(|| self.default.frequency.clone()),
+                    count: thin.count.unwrap_or(self.default.count),
+                };
+                (key, full_instance)
+            })
+            .collect()
+    }
+}
+
+fn config_default_frequency() -> String {
+    "hourly".into()
+}
+
+fn config_default_count() -> u32 {
+    5
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {

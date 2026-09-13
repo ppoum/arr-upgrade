@@ -5,8 +5,8 @@ use reqwest::StatusCode;
 use crate::{
     ArrError, Client, RequestPayloadExt,
     radarr::api::{
-        AllMovies, ApiInfo, ApiInfoResponse, CommandInfo, CommandInfoRequest, CommandResult,
-        CommandStatus, Movie, MoviesSearch, RadarrJobId,
+        AllMovies, ApiInfo, ApiInfoResponse, CommandId, CommandInfo, CommandInfoRequest,
+        CommandResult, CommandStatus, Movie, MoviesSearch,
     },
 };
 
@@ -62,20 +62,20 @@ impl RadarrClient {
         self.send(AllMovies).await
     }
 
-    pub async fn search_movies(&self, ids: Vec<u32>) -> Result<RadarrJobId, ArrError> {
+    pub async fn search_movies(&self, ids: Vec<u32>) -> Result<CommandId, ArrError> {
         let request = MoviesSearch { ids };
         let response = self.send(request).await?;
-        Ok(RadarrJobId(response.id))
+        Ok(CommandId(response.id))
     }
 
-    pub async fn get_command_info(&self, id: RadarrJobId) -> Result<CommandInfo, ArrError> {
+    pub async fn get_command_info(&self, id: CommandId) -> Result<CommandInfo, ArrError> {
         self.send(CommandInfoRequest { id }).await
     }
 
     /// Blocks until the command's status becomes `Completed`. Returns the [CommandResult].
     pub async fn wait_for_command_completed(
         &self,
-        id: RadarrJobId,
+        id: CommandId,
         timeout: Option<Duration>,
     ) -> Result<CommandResult, ArrError> {
         const FREQ: Duration = Duration::from_secs(1);

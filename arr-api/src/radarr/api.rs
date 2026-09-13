@@ -68,8 +68,8 @@ pub(super) struct MoviesSearchResponse {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct RadarrJobId(pub u32);
-impl Display for RadarrJobId {
+pub struct CommandId(pub u32);
+impl Display for CommandId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
     }
@@ -99,7 +99,7 @@ impl ArrRequest for MoviesSearch {
 }
 
 pub(super) struct CommandInfoRequest {
-    pub id: RadarrJobId,
+    pub id: CommandId,
 }
 
 #[derive(Debug, Deserialize)]

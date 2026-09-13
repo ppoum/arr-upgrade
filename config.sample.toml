@@ -1,0 +1,14 @@
+# If a value is not specified for an individual instance, then the default value is used.
+[default]
+frequency = "hourly"
+count = 5
+
+[radarr.foo]
+url = "http://127.0.0.1:7878"
+api_key = "1234567890abcdef"
+frequency = "hourly|daily|weekly|monthly" # or cron syntax: "0 0 0 1 * *"
+
+[radarr.bar]
+url = "http://127.0.0.1:7879"
+api_key = "1234567890abcdef"
+count = 5
