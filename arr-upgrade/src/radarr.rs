@@ -7,7 +7,6 @@ use arr_api::radarr::{
 };
 use chrono::Local;
 use cron::Schedule;
-use futures::future::join_all;
 
 use crate::db::{DatabaseActor, DatabaseActorMethods};
 
@@ -114,7 +113,7 @@ async fn search_movies(
         None => bail!("DB actor did not answer"),
     };
 
-    let movies = movies.iter().filter(|m| oldest_ids.contains(&m.id));
+    let movies = movies.iter().filter(|m| oldest_ids.contains(&m.tmdb_id));
     let movie_cnt = oldest_ids.len();
 
     // Search movies in parallel, let radarr handle the queue
@@ -147,7 +146,7 @@ async fn search_movies(
             .with_context(|| "search command failed to execute")?;
 
         match result.with_context(|| "search command failed to complete")? {
-            CommandResult::Successful => searched_ids.push(movie.id),
+            CommandResult::Successful => searched_ids.push(movie.tmdb_id),
             res => log::warn!("radarr-{name}: search for {movie} failed - {res}"),
         }
     }

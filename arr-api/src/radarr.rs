@@ -6,7 +6,7 @@ use crate::{
     ArrError, Client, RequestPayloadExt,
     radarr::api::{
         AllMovies, ApiInfo, ApiInfoResponse, CommandId, CommandInfo, CommandInfoRequest,
-        CommandResult, CommandStatus, Movie, MoviesSearch,
+        CommandResult, CommandStatus, Movie, MoviesSearch, RadarrId,
     },
 };
 
@@ -62,7 +62,7 @@ impl RadarrClient {
         self.send(AllMovies).await
     }
 
-    pub async fn search_movies(&self, ids: Vec<u32>) -> Result<CommandId, ArrError> {
+    pub async fn search_movies(&self, ids: Vec<RadarrId>) -> Result<CommandId, ArrError> {
         let request = MoviesSearch { ids };
         let response = self.send(request).await?;
         Ok(CommandId(response.id))

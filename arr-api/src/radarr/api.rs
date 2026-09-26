@@ -29,20 +29,31 @@ impl ArrRequest for ApiInfo {
     }
 }
 
-pub(super) struct AllMovies;
+#[derive(Debug, Copy, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RadarrId(pub u32);
+
+#[derive(Debug, Copy, Clone, Deserialize, PartialEq, sqlx::Type)]
+#[serde(transparent)]
+#[sqlx(transparent)]
+pub struct TmdbId(pub u32);
+
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Movie {
-    pub id: u32,
+    pub id: RadarrId,
+    pub tmdb_id: TmdbId,
     pub title: String,
     pub monitored: bool,
 }
 
 impl Display for Movie {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} ({})", self.title, self.id)
+        write!(f, "{} ({})", self.title, self.tmdb_id.0)
     }
 }
 
+pub(super) struct AllMovies;
 impl ArrRequest for AllMovies {
     type Params = ();
 
@@ -60,13 +71,13 @@ impl ArrRequest for AllMovies {
 }
 
 pub(super) struct MoviesSearch {
-    pub ids: Vec<u32>,
+    pub ids: Vec<RadarrId>,
 }
 #[derive(Debug, Serialize, Clone)]
 pub(super) struct MoviesSearchParams {
     name: String,
     #[serde(rename = "movieIds")]
-    ids: Vec<u32>,
+    ids: Vec<RadarrId>,
 }
 
 #[derive(Debug, Deserialize)]

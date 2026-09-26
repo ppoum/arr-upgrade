@@ -1,9 +1,7 @@
 use anyhow::{Context, bail};
-use arr_api::radarr::api::Movie;
+use arr_api::radarr::api::{Movie, TmdbId};
 use chrono::Utc;
-use sqlx::{
-    AssertSqlSafe, SqliteExecutor, SqlitePool, prelude::FromRow, query, query_as, query_scalar,
-};
+use sqlx::{AssertSqlSafe, SqliteExecutor, SqlitePool, query, query_scalar};
 use tokio::sync::mpsc::Receiver;
 
 use crate::db::DatabaseMessage;
@@ -43,19 +41,13 @@ pub async fn start_actor(pool: SqlitePool, mut rx: Receiver<DatabaseMessage>) {
     log::info!("DB actor closing");
 }
 
-#[derive(Debug, FromRow)]
-struct DbMovie {
-    movie_id: u32,
-}
-
-/// Returns all movies for an instance
-async fn get_all_movies(
+/// Returns a list of all tracked movie IDs for an instance
+async fn get_all_movie_ids(
     executor: impl SqliteExecutor<'_>,
     instance_name: &str,
-) -> sqlx::Result<Vec<DbMovie>> {
-    query_as!(
-        DbMovie,
-        r#"SELECT movie_id AS "movie_id: u32" FROM radarr WHERE instance_name = $1"#,
+) -> sqlx::Result<Vec<TmdbId>> {
+    query_scalar!(
+        r#"SELECT tmdb_id AS "tmdb_id: TmdbId" FROM radarr WHERE instance_name = $1"#,
         instance_name
     )
     .fetch_all(executor)
@@ -73,18 +65,17 @@ async fn sync_movies(
         .await
         .with_context(|| "failed to start transaction")?;
 
-    let db_movies = get_all_movies(pool, instance_name)
+    let db_movies = get_all_movie_ids(pool, instance_name)
         .await
         .with_context(|| "failed to fetch existing movies from db")?;
 
     // Find movies to delete (now unmonitored or unreferenced)
     let delete_ids = db_movies
-        .iter()
-        .map(|db| db.movie_id)
+        .into_iter()
         .filter(|id| {
             movies
                 .iter()
-                .find(|movie| movie.id == *id && movie.monitored)
+                .find(|&movie| movie.tmdb_id == *id && movie.monitored)
                 .is_none()
         })
         .collect::<Vec<_>>();
@@ -92,41 +83,31 @@ async fn sync_movies(
     let mut insert_errs = vec![];
     for movie in movies {
         if !movie.monitored {
-            log::trace!(
-                "Skipping unmonitored {} ({}) from {}",
-                movie.title,
-                movie.id,
-                instance_name
-            );
+            log::trace!("Skipping unmonitored {movie} from {instance_name}",);
             continue;
         }
-        log::trace!(
-            "Inserting {} ({}) from {}",
-            movie.title,
-            movie.id,
-            instance_name
-        );
+        log::trace!("Inserting {movie} from {instance_name}");
         if let Err(e) = query!(
             "INSERT OR IGNORE
-            INTO radarr (instance_name, movie_id)
+            INTO radarr (instance_name, tmdb_id)
             VALUES ($1, $2)",
             instance_name,
-            movie.id
+            movie.tmdb_id
         )
         .execute(&mut *tx)
         .await
         {
-            insert_errs.push((movie.id, e));
+            insert_errs.push((movie, e));
         }
     }
 
     if !insert_errs.is_empty() {
         let msg = insert_errs
             .iter()
-            .map(|(id, e)| format!("{id} - {e}"))
+            .map(|(movie, e)| format!("{movie} - {e}"))
             .collect::<Vec<_>>()
             .join(", ");
-        bail!("failed to insert the following ids: {msg}");
+        bail!("failed to insert the following movies: {msg}");
     }
 
     delete_movies(&mut *tx, instance_name, &delete_ids)
@@ -141,7 +122,7 @@ async fn sync_movies(
 async fn delete_movies(
     executor: impl SqliteExecutor<'_>,
     instance_name: &str,
-    ids: &[u32],
+    ids: &[TmdbId],
 ) -> sqlx::Result<()> {
     if ids.is_empty() {
         return Ok(());
@@ -154,7 +135,7 @@ async fn delete_movies(
     // SAFETY: IDs can only be integers, and the user provided value is never directly added to the
     // string. No injection possible
     let sql = format!(
-        "DELETE FROM radarr WHERE instance_name = ? AND movie_id IN ({})",
+        "DELETE FROM radarr WHERE instance_name = ? AND tmdb_id IN ({})",
         placeholder
     );
 
@@ -172,10 +153,10 @@ async fn fetch_n_oldest_movies(
     executor: impl SqliteExecutor<'_>,
     instance_name: &str,
     count: u32,
-) -> Vec<u32> {
+) -> Vec<TmdbId> {
     match query_scalar!(
-        r#"SELECT movie_id
-        AS "movie_id: u32"
+        r#"SELECT tmdb_id
+        AS "tmdb_id: TmdbId"
         FROM radarr
         WHERE instance_name = $1
         ORDER BY last_check ASC
@@ -198,7 +179,7 @@ async fn fetch_n_oldest_movies(
 async fn update_checked_timestamp(
     executor: impl SqliteExecutor<'_>,
     instance_name: &str,
-    ids: &[u32],
+    ids: &[TmdbId],
 ) -> anyhow::Result<()> {
     let timestamp = Utc::now();
     if ids.is_empty() {
@@ -213,7 +194,7 @@ async fn update_checked_timestamp(
     // SAFETY: IDs can only be integers, and the user provided value is never directly added to the
     // string. No injection possible
     let sql = format!(
-        "UPDATE radarr SET last_check = ? WHERE instance_name = ? AND movie_id IN ({})",
+        "UPDATE radarr SET last_check = ? WHERE instance_name = ? AND tmdb_id IN ({})",
         placeholder
     );
 
@@ -233,6 +214,8 @@ async fn update_checked_timestamp(
 mod tests {
     use std::time::Duration;
 
+    use arr_api::radarr::api::RadarrId;
+
     use super::*;
 
     /// When adding new movies, ensure that "adding" an existing row doesn't wipe its existing timestamp
@@ -242,7 +225,7 @@ mod tests {
         let timestamp = Utc::now();
         query!(
             r#"
-            INSERT INTO radarr (movie_id, instance_name, last_check)
+            INSERT INTO radarr (tmdb_id, instance_name, last_check)
             VALUES
             (1, $1, $2) -- newest
             "#,
@@ -258,12 +241,14 @@ mod tests {
             INSTANCE_NAME,
             &[
                 Movie {
-                    id: 1,
+                    id: RadarrId(1),
+                    tmdb_id: TmdbId(1),
                     title: "".into(),
                     monitored: true,
                 },
                 Movie {
-                    id: 2,
+                    id: RadarrId(2),
+                    tmdb_id: TmdbId(2),
                     title: "".into(),
                     monitored: true,
                 },
@@ -273,13 +258,13 @@ mod tests {
         .unwrap();
 
         // Assert that 1 still has its timestamp, 2 is a new row with no timestamps
-        let records = query!(r#"SELECT movie_id, last_check FROM radarr"#)
+        let records = query!(r#"SELECT tmdb_id, last_check FROM radarr"#)
             .fetch_all(&pool)
             .await
             .unwrap();
 
         for record in records {
-            match record.movie_id {
+            match record.tmdb_id {
                 // Still existing timestamp
                 1 => assert_eq!(record.last_check, Some(timestamp.naive_utc())),
                 2 => assert_eq!(record.last_check, None),
@@ -297,12 +282,14 @@ mod tests {
             INSTANCE_NAME,
             &[
                 Movie {
-                    id: 1,
+                    id: RadarrId(1),
+                    tmdb_id: TmdbId(1),
                     title: "".into(),
                     monitored: true,
                 },
                 Movie {
-                    id: 2,
+                    id: RadarrId(2),
+                    tmdb_id: TmdbId(2),
                     title: "".into(),
                     monitored: false,
                 },
@@ -312,14 +299,14 @@ mod tests {
         .unwrap();
 
         // Assert that 1 is in the DB (monitored), but 2 isn't (unmonitored)
-        let records = query!(r#"SELECT movie_id, last_check FROM radarr"#)
+        let records = query!(r#"SELECT tmdb_id, last_check FROM radarr"#)
             .fetch_all(&pool)
             .await
             .unwrap();
 
         assert_eq!(records.len(), 1);
         let record = records.first().unwrap();
-        assert_eq!(record.movie_id, 1);
+        assert_eq!(record.tmdb_id, 1);
     }
 
     /// When adding new movies, ensure that we remove movies that are no longer monitored / no
@@ -329,7 +316,7 @@ mod tests {
         const INSTANCE_NAME: &str = "instance";
         query!(
             r#"
-            INSERT INTO radarr (movie_id, instance_name, last_check)
+            INSERT INTO radarr (tmdb_id, instance_name, last_check)
             VALUES
             (1, $1, null),
             (2, $1, null),
@@ -346,12 +333,14 @@ mod tests {
             INSTANCE_NAME,
             &[
                 Movie {
-                    id: 1,
+                    id: RadarrId(1),
+                    tmdb_id: TmdbId(1),
                     title: "".into(),
                     monitored: true,
                 },
                 Movie {
-                    id: 2,
+                    id: RadarrId(2),
+                    tmdb_id: TmdbId(2),
                     title: "".into(),
                     monitored: false,
                 },
@@ -362,14 +351,14 @@ mod tests {
 
         // Assert that only id 1 still in db (2 removed because unmonitored, 3 removed because no
         // longer in movie list)
-        let records = query!(r#"SELECT movie_id, last_check FROM radarr"#)
+        let records = query!(r#"SELECT tmdb_id, last_check FROM radarr"#)
             .fetch_all(&pool)
             .await
             .unwrap();
 
         assert_eq!(records.len(), 1);
         let record = records.first().unwrap();
-        assert_eq!(record.movie_id, 1);
+        assert_eq!(record.tmdb_id, 1);
     }
 
     /// When rows with both timestamps and no timestamps exist, the no timestamps rows should be
@@ -381,7 +370,7 @@ mod tests {
         let newest = oldest + Duration::from_secs(60);
         query!(
             r#"
-            INSERT INTO radarr (movie_id, instance_name, last_check)
+            INSERT INTO radarr (tmdb_id, instance_name, last_check)
             VALUES
             (1, $1, $3),   -- newest
             (2, $1, $2),   -- oldest
@@ -398,7 +387,11 @@ mod tests {
         .unwrap();
 
         // Assert null before oldest before newest
-        let ids = fetch_n_oldest_movies(&pool, INSTANCE_NAME, 5).await;
+        let ids = fetch_n_oldest_movies(&pool, INSTANCE_NAME, 5)
+            .await
+            .iter()
+            .map(|id| id.0)
+            .collect::<Vec<_>>();
         assert_eq!(ids, vec![3, 5, 2, 1, 4]);
     }
 
@@ -410,7 +403,7 @@ mod tests {
         let old_timestamp = Utc::now() - Duration::from_mins(60);
         query!(
             r#"
-            INSERT INTO radarr (movie_id, instance_name, last_check)
+            INSERT INTO radarr (tmdb_id, instance_name, last_check)
             VALUES
             (1, $1, $2),
             (2, $1, null),
@@ -423,14 +416,14 @@ mod tests {
         .await
         .unwrap();
 
-        update_checked_timestamp(&pool, INSTANCE_NAME, &[1, 2])
+        update_checked_timestamp(&pool, INSTANCE_NAME, &[TmdbId(1), TmdbId(2)])
             .await
             .unwrap();
 
         // Assert that 1 and 2 have the new timestamps, and that 3 still has the old timestamp
         let records = query!(
             r#"
-            SELECT movie_id, last_check FROM radarr
+            SELECT tmdb_id, last_check FROM radarr
             WHERE instance_name = $1
             "#,
             INSTANCE_NAME
@@ -440,7 +433,7 @@ mod tests {
         .unwrap();
 
         for record in records {
-            match record.movie_id {
+            match record.tmdb_id {
                 // No longer old
                 1 => assert_ne!(record.last_check, Some(old_timestamp.naive_utc())),
                 // No longer none

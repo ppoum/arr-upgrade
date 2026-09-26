@@ -1,7 +1,7 @@
 use std::{str::FromStr, sync::Arc};
 
 use anyhow::Context;
-use arr_api::radarr::api::Movie;
+use arr_api::radarr::api::{Movie, TmdbId};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::sync::mpsc::{self, Sender};
 
@@ -15,11 +15,11 @@ enum DatabaseMessage {
     GetOldestMovies {
         instance_name: String,
         count: u32,
-        reply: oneshot::Sender<Vec<u32>>,
+        reply: oneshot::Sender<Vec<TmdbId>>,
     },
     MarkMoviesChecked {
         instance_name: String,
-        ids: Vec<u32>,
+        ids: Vec<TmdbId>,
     },
 }
 
@@ -49,10 +49,10 @@ pub trait DatabaseActorMethods {
     async fn sync_media(&self, instance_name: String, media: Arc<Vec<Movie>>);
 
     /// Returns the `count` oldest movies in the database for the specified instance
-    async fn get_oldest_movies(&self, instance_name: String, count: u32) -> Option<Vec<u32>>;
+    async fn get_oldest_movies(&self, instance_name: String, count: u32) -> Option<Vec<TmdbId>>;
 
     /// Updates the checked timestamp for the provided movies
-    async fn mark_movies_checked(&self, instance_name: String, ids: Vec<u32>);
+    async fn mark_movies_checked(&self, instance_name: String, ids: Vec<TmdbId>);
 }
 
 impl DatabaseActorMethods for DatabaseActor {
@@ -65,7 +65,7 @@ impl DatabaseActorMethods for DatabaseActor {
         let _ = self.0.send(msg).await;
     }
 
-    async fn get_oldest_movies(&self, instance_name: String, count: u32) -> Option<Vec<u32>> {
+    async fn get_oldest_movies(&self, instance_name: String, count: u32) -> Option<Vec<TmdbId>> {
         let (tx, rx) = oneshot::channel();
         let msg = DatabaseMessage::GetOldestMovies {
             instance_name,
@@ -77,7 +77,7 @@ impl DatabaseActorMethods for DatabaseActor {
         rx.await.ok()
     }
 
-    async fn mark_movies_checked(&self, instance_name: String, ids: Vec<u32>) {
+    async fn mark_movies_checked(&self, instance_name: String, ids: Vec<TmdbId>) {
         let msg = DatabaseMessage::MarkMoviesChecked { instance_name, ids };
         let _ = self.0.send(msg).await;
     }
