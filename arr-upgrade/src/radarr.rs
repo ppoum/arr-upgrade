@@ -1,7 +1,10 @@
 use std::{str::FromStr, sync::Arc, time::Duration};
 
 use anyhow::{Context, bail};
-use arr_api::radarr::{RadarrClient, api::CommandResult};
+use arr_api::radarr::{
+    RadarrClient,
+    api::{CommandResult, Movie},
+};
 use chrono::Local;
 use cron::Schedule;
 use futures::future::join_all;
@@ -97,56 +100,55 @@ async fn radarr_handler(
     }
 }
 
+/// Main search execution loop - updates internal state for instance and starts search
 async fn search_movies(
     name: String,
     client: Arc<RadarrClient>,
     db_actor: &DatabaseActor,
     count: u32,
 ) -> anyhow::Result<()> {
-    sync_movies(name.clone(), &client, db_actor).await?;
+    let movies = sync_movies(name.clone(), &client, db_actor).await?;
 
-    let movie_ids = match db_actor.get_oldest_movies(name.clone(), count).await {
+    let oldest_ids = match db_actor.get_oldest_movies(name.clone(), count).await {
         Some(ids) => ids,
         None => bail!("DB actor did not answer"),
     };
 
+    let movies = movies.iter().filter(|m| oldest_ids.contains(&m.id));
+    let movie_cnt = oldest_ids.len();
+
     // Search movies in parallel, let radarr handle the queue
-    let mut command_ids = Vec::with_capacity(movie_ids.len());
-    for movie_id in &movie_ids {
-        // TODO: would be nice to be able to log movie name
-        log::debug!("radarr-{name}: starting search for {movie_id}");
+    let mut command_ids = Vec::with_capacity(movie_cnt);
+    for movie in movies {
+        log::debug!("radarr-{name}: starting search for {movie}");
         let command_id = client
-            .search_movies(vec![*movie_id])
+            .search_movies(vec![movie.id])
             .await
             .with_context(|| "failed to start movie search")?;
-        command_ids.push((*movie_id, command_id));
+        command_ids.push((movie, command_id));
     }
 
-    let mut handles = Vec::with_capacity(movie_ids.len());
-    for (movie_id, command_id) in command_ids {
+    let mut handles = Vec::with_capacity(movie_cnt);
+    for (movie, command_id) in command_ids {
         let client = client.clone();
-        handles.push(tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             client
                 .wait_for_command_completed(command_id, Some(RADARR_MOVIE_SEARCH_TIMEOUT))
                 .await
-                .map(|res| (movie_id, res))
-        }));
+        });
+        handles.push((movie, handle));
     }
 
-    let results = join_all(handles).await;
-    let mut searched_ids = Vec::with_capacity(movie_ids.len());
-    for result in results {
-        let r = match result {
-            Ok(r) => r,
-            Err(e) => return Err(e).with_context(|| "search command failed to execute"),
-        };
+    // Get result for jobs
+    let mut searched_ids = Vec::with_capacity(movie_cnt);
+    for (movie, handle) in handles {
+        let result = handle
+            .await
+            .with_context(|| "search command failed to execute")?;
 
-        match r {
-            Ok((movie_id, CommandResult::Successful)) => searched_ids.push(movie_id),
-            Ok((movie_id, res)) => {
-                log::warn!("Search for id {movie_id} was not successful - {res}")
-            }
-            Err(e) => return Err(e).with_context(|| "search command failed to complete"),
+        match result.with_context(|| "search command failed to complete")? {
+            CommandResult::Successful => searched_ids.push(movie.id),
+            res => log::warn!("radarr-{name}: search for {movie} failed - {res}"),
         }
     }
 
@@ -161,7 +163,7 @@ async fn sync_movies(
     name: String,
     client: &RadarrClient,
     db_actor: &DatabaseActor,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Arc<Vec<Movie>>> {
     log::debug!("radarr-{name}: syncing movies");
     let movies = client
         .list_movies()
@@ -172,6 +174,7 @@ async fn sync_movies(
         movies.len()
     );
 
-    db_actor.sync_media(name, movies).await;
-    Ok(())
+    let movies = Arc::new(movies);
+    db_actor.sync_media(name, movies.clone()).await;
+    Ok(movies)
 }

@@ -36,6 +36,13 @@ pub struct Movie {
     pub title: String,
     pub monitored: bool,
 }
+
+impl Display for Movie {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.title, self.id)
+    }
+}
+
 impl ArrRequest for AllMovies {
     type Params = ();
 

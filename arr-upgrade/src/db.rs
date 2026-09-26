@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 use anyhow::Context;
 use arr_api::radarr::api::Movie;
@@ -10,7 +10,7 @@ mod actor;
 enum DatabaseMessage {
     SyncMedia {
         instance_name: String,
-        media: Vec<Movie>,
+        media: Arc<Vec<Movie>>,
     },
     GetOldestMovies {
         instance_name: String,
@@ -46,7 +46,7 @@ pub struct DatabaseActor(Sender<DatabaseMessage>);
 
 pub trait DatabaseActorMethods {
     /// Sync arr media to database
-    async fn sync_media(&self, instance_name: String, media: Vec<Movie>);
+    async fn sync_media(&self, instance_name: String, media: Arc<Vec<Movie>>);
 
     /// Returns the `count` oldest movies in the database for the specified instance
     async fn get_oldest_movies(&self, instance_name: String, count: u32) -> Option<Vec<u32>>;
@@ -56,7 +56,7 @@ pub trait DatabaseActorMethods {
 }
 
 impl DatabaseActorMethods for DatabaseActor {
-    async fn sync_media(&self, instance_name: String, media: Vec<Movie>) {
+    async fn sync_media(&self, instance_name: String, media: Arc<Vec<Movie>>) {
         let msg = DatabaseMessage::SyncMedia {
             instance_name,
             media,
