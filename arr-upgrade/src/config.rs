@@ -3,19 +3,47 @@ use std::{collections::HashMap, path::Path};
 use anyhow::Context;
 use serde::Deserialize;
 
+const DEFAULT_FREQUENCY: &str = "hourly";
+const DEFAULT_COUNT: u32 = 5;
+const DEFAULT_GRANULARITY: SonarrSearchGranularity = SonarrSearchGranularity::Season;
+
 #[derive(Debug, Deserialize, Clone)]
-struct ThinArrInstance {
+struct ThinRadarrInstance {
     pub url: String,
     pub api_key: String,
     pub frequency: Option<String>,
     pub count: Option<u32>,
 }
 
-pub struct ArrInstance {
+pub struct RadarrInstance {
     pub url: String,
     pub api_key: String,
     pub frequency: String,
     pub count: u32,
+}
+
+#[derive(Debug, Deserialize, Copy, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub enum SonarrSearchGranularity {
+    Season,
+    Show,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+struct ThinSonarrInstance {
+    pub url: String,
+    pub api_key: String,
+    pub frequency: Option<String>,
+    pub count: Option<u32>,
+    pub search_granularity: Option<SonarrSearchGranularity>,
+}
+
+pub struct SonarrInstance {
+    pub url: String,
+    pub api_key: String,
+    pub frequency: String,
+    pub count: u32,
+    pub search_granularity: SonarrSearchGranularity,
 }
 
 #[derive(Debug, Deserialize)]
@@ -23,34 +51,37 @@ pub struct Config {
     #[serde(default)]
     default: DefaultSection,
     #[serde(default)]
-    radarr: HashMap<String, ThinArrInstance>,
+    radarr: HashMap<String, ThinRadarrInstance>,
+    #[serde(default)]
+    sonarr: HashMap<String, ThinSonarrInstance>,
 }
 
 /// `[default]` section of the toml config file
 #[derive(Debug, Deserialize)]
+#[serde(default)]
 struct DefaultSection {
-    #[serde(default = "config_default_frequency")]
     frequency: String,
-    #[serde(default = "config_default_count")]
     count: u32,
+    search_granularity: SonarrSearchGranularity,
 }
 
 impl Default for DefaultSection {
     fn default() -> Self {
         Self {
-            frequency: config_default_frequency(),
-            count: config_default_count(),
+            frequency: DEFAULT_FREQUENCY.into(),
+            count: DEFAULT_COUNT,
+            search_granularity: DEFAULT_GRANULARITY,
         }
     }
 }
 
 impl Config {
-    pub fn get_radarr_instances(&self) -> HashMap<String, ArrInstance> {
+    pub fn get_radarr_instances(&self) -> HashMap<String, RadarrInstance> {
         self.radarr
             .clone()
             .into_iter()
             .map(|(key, thin)| {
-                let full_instance = ArrInstance {
+                let full_instance = RadarrInstance {
                     url: thin.url,
                     api_key: thin.api_key,
                     frequency: thin
@@ -62,14 +93,25 @@ impl Config {
             })
             .collect()
     }
-}
 
-fn config_default_frequency() -> String {
-    "hourly".into()
-}
-
-fn config_default_count() -> u32 {
-    5
+    pub fn get_sonarr_instances(&self) -> HashMap<String, SonarrInstance> {
+        self.sonarr
+            .clone()
+            .into_iter()
+            .map(|(key, thin)| {
+                let full_instance = SonarrInstance {
+                    url: thin.url,
+                    api_key: thin.api_key,
+                    frequency: thin.frequency.unwrap_or(self.default.frequency.clone()),
+                    count: thin.count.unwrap_or(self.default.count),
+                    search_granularity: thin
+                        .search_granularity
+                        .unwrap_or(self.default.search_granularity),
+                };
+                (key, full_instance)
+            })
+            .collect()
+    }
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
@@ -80,6 +122,8 @@ pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::assert_matches;
 
     use std::io::{self, Write};
 
@@ -127,5 +171,196 @@ mod tests {
             .expect("radarr instance named two should exist");
         assert_eq!(two.url, "bar");
         assert_eq!(two.api_key, "bar");
+    }
+
+    /// When instance doesn't define frequency, use default
+    #[test]
+    fn config_uses_default_frequency() {
+        let file = create_config(
+            r#"
+        [default]
+        frequency = "default_freq"
+
+        [radarr.one]
+        url = ""
+        api_key = ""
+        [radarr.two]
+        url = ""
+        api_key = ""
+        frequency = "overwrite_freq"
+
+        [sonarr.one]
+        url = ""
+        api_key = ""
+        [sonarr.two]
+        url = ""
+        api_key = ""
+        frequency = "overwrite_freq"
+            "#
+            .to_owned(),
+        )
+        .unwrap();
+
+        let config = load_config(file.path()).unwrap();
+
+        let radarr = config.get_radarr_instances();
+        let one = radarr.get("one").expect("should have instance named one");
+        assert_eq!(one.frequency, "default_freq");
+        let two = radarr.get("two").expect("should have instance named two");
+        assert_eq!(two.frequency, "overwrite_freq");
+
+        let sonarr = config.get_sonarr_instances();
+        let one = sonarr.get("one").expect("should have instance named one");
+        assert_eq!(one.frequency, "default_freq");
+        let two = sonarr.get("two").expect("should have instance named two");
+        assert_eq!(two.frequency, "overwrite_freq");
+    }
+
+    /// When both the default section and instance don't define frequency, then use
+    /// [DEFAULT_FREQUENCY]
+    #[test]
+    fn config_uses_default_default_frequency() {
+        let file = create_config(
+            r#"
+        [radarr.one]
+        url = ""
+        api_key = ""
+        [sonarr.one]
+        url = ""
+        api_key = ""
+            "#
+            .to_owned(),
+        )
+        .unwrap();
+
+        let config = load_config(file.path()).unwrap();
+
+        let radarr = config.get_radarr_instances();
+        let one = radarr.get("one").expect("should have instance named one");
+        assert_eq!(one.frequency, DEFAULT_FREQUENCY);
+
+        let sonarr = config.get_sonarr_instances();
+        let one = sonarr.get("one").expect("should have instance named one");
+        assert_eq!(one.frequency, DEFAULT_FREQUENCY);
+    }
+
+    /// When instance doesn't define count, use default
+    #[test]
+    fn config_uses_default_count() {
+        let file = create_config(
+            r#"
+        [default]
+        count = 999
+
+        [radarr.one]
+        url = ""
+        api_key = ""
+        [radarr.two]
+        url = ""
+        api_key = ""
+        count = 111
+
+        [sonarr.one]
+        url = ""
+        api_key = ""
+        [sonarr.two]
+        url = ""
+        api_key = ""
+        count = 111
+            "#
+            .to_owned(),
+        )
+        .unwrap();
+
+        let config = load_config(file.path()).unwrap();
+
+        let radarr = config.get_radarr_instances();
+        let one = radarr.get("one").expect("should have instance named one");
+        assert_eq!(one.count, 999);
+        let two = radarr.get("two").expect("should have instance named two");
+        assert_eq!(two.count, 111);
+
+        let sonarr = config.get_sonarr_instances();
+        let one = sonarr.get("one").expect("should have instance named one");
+        assert_eq!(one.count, 999);
+        let two = sonarr.get("two").expect("should have instance named two");
+        assert_eq!(two.count, 111);
+    }
+
+    /// When both the default section and instance don't define count, then use [DEFAULT_COUNT]
+    #[test]
+    fn config_uses_default_default_count() {
+        let file = create_config(
+            r#"
+        [radarr.one]
+        url = ""
+        api_key = ""
+        [sonarr.one]
+        url = ""
+        api_key = ""
+            "#
+            .to_owned(),
+        )
+        .unwrap();
+
+        let config = load_config(file.path()).unwrap();
+
+        let radarr = config.get_radarr_instances();
+        let one = radarr.get("one").expect("should have instance named one");
+        assert_eq!(one.count, DEFAULT_COUNT);
+
+        let sonarr = config.get_sonarr_instances();
+        let one = sonarr.get("one").expect("should have instance named one");
+        assert_eq!(one.count, DEFAULT_COUNT);
+    }
+
+    /// When sonarr instance doesn't define granularity, use default
+    #[test]
+    fn config_uses_default_granularity() {
+        let file = create_config(
+            r#"
+        [default]
+        search_granularity = "show"
+
+        [sonarr.one]
+        url = ""
+        api_key = ""
+        [sonarr.two]
+        url = ""
+        api_key = ""
+        search_granularity = "season"
+            "#
+            .to_owned(),
+        )
+        .unwrap();
+
+        let config = load_config(file.path()).unwrap();
+        let sonarr = config.get_sonarr_instances();
+
+        let one = sonarr.get("one").expect("should have instance named one");
+        assert_matches!(one.search_granularity, SonarrSearchGranularity::Show);
+        let two = sonarr.get("two").expect("should have instance named two");
+        assert_matches!(two.search_granularity, SonarrSearchGranularity::Season);
+    }
+
+    /// When both the default section and instance don't define granularity, then use
+    /// [DEFAULT_GRANULARITY]
+    #[test]
+    fn config_uses_default_default_granularity() {
+        let file = create_config(
+            r#"
+        [sonarr.one]
+        url = ""
+        api_key = ""
+            "#
+            .to_owned(),
+        )
+        .unwrap();
+
+        let config = load_config(file.path()).unwrap();
+        let sonarr = config.get_sonarr_instances();
+
+        let one = sonarr.get("one").expect("should have instance named one");
+        assert_matches!(one.search_granularity, DEFAULT_GRANULARITY);
     }
 }

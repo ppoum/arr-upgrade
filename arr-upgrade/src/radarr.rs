@@ -1,4 +1,4 @@
-use std::{str::FromStr, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, bail};
 use arr_api::radarr::{
@@ -10,13 +10,6 @@ use cron::Schedule;
 
 use crate::db::{DatabaseActor, DatabaseActorMethods};
 
-const FREQ_NATURAL_VALUES: [(&str, &str); 4] = [
-    ("hourly", "0 0 * * * *"),
-    ("daily", "0 0 0 * * *"),
-    ("weekly", "0 0 0 * * 0"),
-    ("monthly", "0 0 0 1 * *"),
-];
-
 /// Timeout before giving up on movie search. Since trackers can be slow and radarr has a max
 /// parallel search count, high `count` config values on instances might result in very long jobs.
 const RADARR_MOVIE_SEARCH_TIMEOUT: Duration = Duration::from_mins(10);
@@ -27,29 +20,14 @@ pub async fn start_radarr_handler(
     client: RadarrClient,
     db_actor: DatabaseActor,
     count: u32,
-    frequency: String,
+    schedule: Schedule,
 ) -> anyhow::Result<()> {
     if count == 0 {
         bail!("count must be greater than 0");
     }
-    let schedule =
-        parse_schedule(frequency).with_context(|| "failed to parse cron schedule string")?;
 
     tokio::spawn(radarr_handler(name, client, db_actor, count, schedule));
     Ok(())
-}
-
-/// Converts the frequency config value to a cron schedule. Handles the supported natural language cases
-fn parse_schedule(frequency_str: String) -> Result<Schedule, cron::error::Error> {
-    let cron = if let Some((_, nat)) = FREQ_NATURAL_VALUES
-        .iter()
-        .find(|(s, _)| s.eq_ignore_ascii_case(&frequency_str))
-    {
-        nat.to_string()
-    } else {
-        frequency_str
-    };
-    cron::Schedule::from_str(&cron)
 }
 
 async fn radarr_handler(

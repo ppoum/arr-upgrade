@@ -2,6 +2,7 @@
 [default]
 frequency = "hourly"
 count = 5
+search_granularity = "season"
 
 [radarr.foo]
 url = "http://127.0.0.1:7878"
@@ -12,3 +13,12 @@ frequency = "hourly|daily|weekly|monthly" # or cron syntax: "0 0 0 1 * *"
 url = "http://127.0.0.1:7879"
 api_key = "1234567890abcdef"
 count = 5
+
+[sonarr.fizz]
+url = "http://127.0.0.1:8989"
+api_key = "1234567890abcdef"
+
+[sonarr.buzz]
+url = "http://127.0.0.1:8989"
+api_key = "1234567890abcdef"
+search_granularity = "show"
