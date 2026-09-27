@@ -110,7 +110,7 @@ async fn search_movies(
         let client = client.clone();
         let handle = tokio::spawn(async move {
             client
-                .wait_for_command_completed(command_id, Some(RADARR_MOVIE_SEARCH_TIMEOUT))
+                .block_for_command_execution(command_id, Some(RADARR_MOVIE_SEARCH_TIMEOUT))
                 .await
         });
         handles.push((movie, handle));

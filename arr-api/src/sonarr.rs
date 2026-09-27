@@ -1,8 +1,14 @@
+use std::time::Duration;
+
 use reqwest::StatusCode;
+use tokio::time::Instant;
 
 use crate::{
     ArrError, Client, RequestPayloadExt,
-    sonarr::api::{AllSeriesRequest, ApiInfoRequest, ApiInfoResponse, Series},
+    sonarr::api::{
+        AllSeriesRequest, ApiInfoRequest, ApiInfoResponse, CommandId, CommandInfo,
+        CommandInfoRequest, CommandResult, CommandStatus, Series, SeriesSearchRequest, SonarrId,
+    },
 };
 
 pub mod api;
@@ -54,5 +60,40 @@ impl SonarrClient {
 
     pub async fn list_series(&self) -> Result<Vec<Series>, ArrError> {
         self.send(AllSeriesRequest).await
+    }
+
+    pub async fn search_series(&self, id: SonarrId) -> Result<CommandId, ArrError> {
+        self.send(SeriesSearchRequest(id))
+            .await
+            .map(|response| response.id)
+    }
+
+    pub async fn get_command_info(&self, id: CommandId) -> Result<CommandInfo, ArrError> {
+        self.send(CommandInfoRequest(id)).await
+    }
+
+    /// Blocks until the command is done executing. This occurs when the command's status is no
+    /// longer `Queued` or `Started`. Note that this includes error states, such as `Failed` or
+    /// `Aborted`.
+    pub async fn block_for_command_execution(
+        &self,
+        id: CommandId,
+        timeout: Option<Duration>,
+    ) -> Result<CommandResult, ArrError> {
+        const FREQ: Duration = Duration::from_secs(1);
+        let start = Instant::now();
+        loop {
+            if let Some(timeout) = timeout
+                && (Instant::now() - start) >= timeout
+            {
+                return Err(ArrError::Timeout);
+            }
+
+            let info = self.get_command_info(id).await?;
+            if !matches!(info.status, CommandStatus::Queued | CommandStatus::Started) {
+                return Ok(info.result);
+            }
+            tokio::time::sleep(FREQ).await;
+        }
     }
 }

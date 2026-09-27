@@ -1,6 +1,7 @@
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use reqwest::StatusCode;
+use tokio::time::Instant;
 
 use crate::{
     ArrError, Client, RequestPayloadExt,
@@ -72,8 +73,10 @@ impl RadarrClient {
         self.send(CommandInfoRequest { id }).await
     }
 
-    /// Blocks until the command's status becomes `Completed`. Returns the [CommandResult].
-    pub async fn wait_for_command_completed(
+    /// Blocks until the command is done executing. This occurs when the command's status is no
+    /// longer `Queued` or `Started`. Note that this includes error states, such as `Failed` or
+    /// `Aborted`.
+    pub async fn block_for_command_execution(
         &self,
         id: CommandId,
         timeout: Option<Duration>,
@@ -88,7 +91,7 @@ impl RadarrClient {
             }
 
             let info = self.get_command_info(id).await?;
-            if matches!(info.status, CommandStatus::Completed) {
+            if !matches!(info.status, CommandStatus::Queued | CommandStatus::Started) {
                 return Ok(info.result);
             }
             tokio::time::sleep(FREQ).await;
