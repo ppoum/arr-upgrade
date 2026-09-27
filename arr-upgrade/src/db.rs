@@ -6,9 +6,14 @@ use arr_api::{
     sonarr::api::Series,
 };
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
-use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::mpsc::{self, Receiver, Sender};
 
-mod actor;
+use crate::db::{
+    movies::{fetch_n_oldest_movies, sync_movies, update_checked_timestamp},
+    series::sync_series,
+};
+
+mod movies;
 mod series;
 
 enum DatabaseMessage {
@@ -44,7 +49,7 @@ pub async fn start_db(url: String) -> anyhow::Result<DatabaseActor> {
         .with_context(|| "failed to migrate db")?;
 
     let (tx, rx) = mpsc::channel(64);
-    tokio::spawn(actor::start_actor(pool, rx));
+    tokio::spawn(start_actor(pool, rx));
 
     Ok(DatabaseActor(tx))
 }
@@ -99,4 +104,48 @@ impl DatabaseActorMethods for DatabaseActor {
         };
         let _ = self.0.send(msg).await;
     }
+}
+
+async fn start_actor(pool: SqlitePool, mut rx: Receiver<DatabaseMessage>) {
+    log::trace!("DB actor spawned");
+
+    while let Some(message) = rx.recv().await {
+        match message {
+            DatabaseMessage::SyncMovies {
+                instance_name,
+                movies,
+            } => {
+                if let Err(e) = sync_movies(&pool, &instance_name, &movies).await {
+                    log::error!("Unable to sync movies");
+                    log::debug!("ERROR: unable to sync movies: {e:#}");
+                }
+            }
+            DatabaseMessage::GetOldestMovies {
+                instance_name,
+                count,
+                reply,
+            } => {
+                let ids = fetch_n_oldest_movies(&pool, &instance_name, count).await;
+                let _ = reply.send(ids);
+            }
+            DatabaseMessage::MarkMoviesChecked { instance_name, ids } => {
+                if let Err(e) = update_checked_timestamp(&pool, &instance_name, &ids).await {
+                    log::error!("Unable to check movies");
+                    log::debug!("ERROR: unable to check movies: {e}");
+                }
+            }
+            DatabaseMessage::SyncSeries {
+                instance_name,
+                series,
+            } => {
+                if let Err(e) = sync_series(&pool, &instance_name, &series).await {
+                    log::error!("Unable to sync series");
+                    log::debug!("ERROR: unable to sync series: {e:#}");
+                }
+            }
+        }
+        log::trace!("DB message handled");
+    }
+
+    log::info!("DB actor closing");
 }
