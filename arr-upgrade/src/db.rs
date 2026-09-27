@@ -3,14 +3,14 @@ use std::{str::FromStr, sync::Arc};
 use anyhow::Context;
 use arr_api::{
     radarr::api::{Movie, TmdbId},
-    sonarr::api::Series,
+    sonarr::api::{Series, TvdbId},
 };
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::sync::mpsc::{self, Receiver, Sender};
 
 use crate::db::{
     movies::{fetch_n_oldest_movies, sync_movies, update_checked_timestamp},
-    series::sync_series,
+    series::{mark_tv_checked, sync_series},
 };
 
 mod movies;
@@ -34,6 +34,15 @@ enum DatabaseMessage {
         instance_name: String,
         series: Arc<Vec<Series>>,
     },
+    MarkTvChecked {
+        instance_name: String,
+        check: TvCheck,
+    },
+}
+
+enum TvCheck {
+    Series { id: TvdbId },
+    Season { id: TvdbId, season: u32 },
 }
 
 pub async fn start_db(url: String) -> anyhow::Result<DatabaseActor> {
@@ -67,7 +76,14 @@ pub trait DatabaseActorMethods {
     /// Updates the checked timestamp for the provided movies
     async fn mark_movies_checked(&self, instance_name: String, ids: Vec<TmdbId>);
 
+    /// Sync sonarr series/seasons to the database
     async fn sync_series(&self, instance_name: String, series: Arc<Vec<Series>>);
+
+    /// Updates the checked timestamp for all seasons of a series
+    async fn mark_series_checked(&self, instance_name: String, id: TvdbId);
+
+    /// Updates the checked timestamp for a single season of a series
+    async fn mark_season_checked(&self, instance_name: String, id: TvdbId, season: u32);
 }
 
 impl DatabaseActorMethods for DatabaseActor {
@@ -101,6 +117,22 @@ impl DatabaseActorMethods for DatabaseActor {
         let msg = DatabaseMessage::SyncSeries {
             instance_name,
             series,
+        };
+        let _ = self.0.send(msg).await;
+    }
+
+    async fn mark_series_checked(&self, instance_name: String, id: TvdbId) {
+        let msg = DatabaseMessage::MarkTvChecked {
+            instance_name,
+            check: TvCheck::Series { id },
+        };
+        let _ = self.0.send(msg).await;
+    }
+
+    async fn mark_season_checked(&self, instance_name: String, id: TvdbId, season: u32) {
+        let msg = DatabaseMessage::MarkTvChecked {
+            instance_name,
+            check: TvCheck::Season { id, season },
         };
         let _ = self.0.send(msg).await;
     }
@@ -141,6 +173,15 @@ async fn start_actor(pool: SqlitePool, mut rx: Receiver<DatabaseMessage>) {
                 if let Err(e) = sync_series(&pool, &instance_name, &series).await {
                     log::error!("Unable to sync series");
                     log::debug!("ERROR: unable to sync series: {e:#}");
+                }
+            }
+            DatabaseMessage::MarkTvChecked {
+                instance_name,
+                check,
+            } => {
+                if let Err(e) = mark_tv_checked(&pool, &instance_name, check).await {
+                    log::error!("Unable to mark TV as checked");
+                    log::debug!("ERROR: unable to check series/season: {e:#}");
                 }
             }
         }
