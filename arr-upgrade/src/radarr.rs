@@ -124,7 +124,10 @@ async fn search_movies(
             .with_context(|| "search command failed to execute")?;
 
         match result.with_context(|| "search command failed to complete")? {
-            CommandResult::Successful => searched_ids.push(movie.tmdb_id),
+            CommandResult::Successful => {
+                log::info!("radarr-{name}: successfully searched for {movie}");
+                searched_ids.push(movie.tmdb_id);
+            }
             res => log::warn!("radarr-{name}: search for {movie} failed - {res}"),
         }
     }

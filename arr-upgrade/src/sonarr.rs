@@ -1,7 +1,13 @@
 use std::{sync::Arc, time::Duration};
 
 use anyhow::{Context, bail};
-use arr_api::sonarr::{SonarrClient, api::Series};
+use arr_api::sonarr::{
+    SonarrClient,
+    api::{
+        CommandResult::{self},
+        Series,
+    },
+};
 use chrono::Local;
 use cron::Schedule;
 
@@ -11,7 +17,7 @@ use crate::{
 };
 
 const _SONARR_SEASON_SEARCH_TIMEOUT: Duration = Duration::from_mins(10);
-const _SONARR_SHOW_SEARCH_TIMEOUT: Duration = Duration::from_mins(20);
+const SONARR_SERIES_SEARCH_TIMEOUT: Duration = Duration::from_mins(20);
 const HANDLER_ERROR_RETRY_DELAY: Duration = Duration::from_mins(5);
 
 pub async fn start_sonarr_handler(
@@ -41,11 +47,12 @@ async fn sonarr_handler(
     name: String,
     client: SonarrClient,
     db_actor: DatabaseActor,
-    _count: u32,
+    count: u32,
     schedule: Schedule,
-    _granularity: SonarrSearchGranularity,
+    granularity: SonarrSearchGranularity,
 ) {
     log::info!("Started sonarr-{name}");
+    let client = Arc::new(client);
 
     let mut wait_for_schedule = false;
     loop {
@@ -78,18 +85,65 @@ async fn sonarr_handler(
 
         // Next time, will have to wait for schedule
         wait_for_schedule = true;
-        if let Err(e) = search_series(name.clone(), &client, &db_actor).await {
-            log::error!("sonarr-{name}: error searching series: {e:#}");
+        let result = match granularity {
+            SonarrSearchGranularity::Show => {
+                search_series(name.clone(), count, client.clone(), &db_actor).await
+            }
+            SonarrSearchGranularity::Season => unimplemented!(),
+        };
+        if let Err(e) = result {
+            log::error!("sonarr-{name}: error during search: {e:#}");
         }
     }
 }
 
 async fn search_series(
     name: String,
-    client: &SonarrClient,
+    count: u32,
+    client: Arc<SonarrClient>,
     db_actor: &DatabaseActor,
 ) -> anyhow::Result<()> {
-    let _series = sync_series(name, client, db_actor).await?;
+    let series = sync_series(name.clone(), &client, db_actor).await?;
+    let oldest_ids = db_actor
+        .get_oldest_series(name.clone(), count)
+        .await
+        .with_context(|| "failed to get oldest series from database")?;
+
+    let series_cnt = oldest_ids.len();
+    let mut handles = Vec::with_capacity(series_cnt);
+
+    let oldest_series = series.iter().filter(|s| oldest_ids.contains(&s.tvdb_id));
+    for series in oldest_series {
+        log::debug!("sonarr-{name}: starting search for {series}");
+        let client = client.clone();
+        let id = series.id;
+        let handle = tokio::spawn(async move {
+            let command_id = client
+                .search_series(id)
+                .await
+                .with_context(|| "failed to start series search")?;
+            client
+                .block_for_command_execution(command_id, Some(SONARR_SERIES_SEARCH_TIMEOUT))
+                .await
+                .with_context(|| "error waiting for command to complete")
+        });
+        handles.push((series, handle));
+    }
+
+    for (series, handle) in handles {
+        let result = handle
+            .await
+            .with_context(|| "search command failed to execute")?;
+        match result.with_context(|| "search command failed to complete")? {
+            CommandResult::Successful => {
+                log::info!("sonarr-{name}: successfully searched for {series}");
+                db_actor
+                    .mark_series_checked(name.clone(), series.tvdb_id)
+                    .await;
+            }
+            other => log::warn!("sonarr-{name}: search for series failed - {other}"),
+        }
+    }
     Ok(())
 }
 
