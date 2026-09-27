@@ -8,6 +8,7 @@ const DEFAULT_COUNT: u32 = 5;
 const DEFAULT_GRANULARITY: SonarrSearchGranularity = SonarrSearchGranularity::Season;
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct ThinRadarrInstance {
     pub url: String,
     pub api_key: String,
@@ -30,6 +31,7 @@ pub enum SonarrSearchGranularity {
 }
 
 #[derive(Debug, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
 struct ThinSonarrInstance {
     pub url: String,
     pub api_key: String,
@@ -47,6 +49,7 @@ pub struct SonarrInstance {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     #[serde(default)]
     default: DefaultSection,
@@ -58,7 +61,7 @@ pub struct Config {
 
 /// `[default]` section of the toml config file
 #[derive(Debug, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct DefaultSection {
     frequency: String,
     count: u32,
