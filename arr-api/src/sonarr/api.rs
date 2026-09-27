@@ -141,6 +141,16 @@ pub enum CommandResult {
     Unsuccessful,
 }
 
+impl Display for CommandResult {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unknown => write!(f, "Unknown"),
+            Self::Successful => write!(f, "Successful"),
+            Self::Unsuccessful => write!(f, "Unsuccessful"),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct CommandInfo {
     pub status: CommandStatus,

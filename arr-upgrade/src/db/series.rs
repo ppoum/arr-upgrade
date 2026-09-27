@@ -5,7 +5,7 @@ use arr_api::sonarr::api::{Series, TvdbId};
 use chrono::Utc;
 use sqlx::{QueryBuilder, Sqlite, SqliteExecutor, SqlitePool, query};
 
-use crate::db::TvCheck;
+use crate::db::{DB_DATETIME_NULL_REPLACEMENT, TvMedia};
 
 /// Returns a list of all seasons for an instance, formatted as a dictionary index by the TVDb ID of
 /// the series.
@@ -157,11 +157,11 @@ async fn delete_seasons(
 pub async fn mark_tv_checked(
     pool: &SqlitePool,
     instance_name: &str,
-    check: TvCheck,
+    check: TvMedia,
 ) -> anyhow::Result<()> {
     match check {
-        TvCheck::Series { id } => update_timestamp_series(pool, instance_name, id).await,
-        TvCheck::Season { id, season } => {
+        TvMedia::Series { id } => update_timestamp_series(pool, instance_name, id).await,
+        TvMedia::Season { id, season } => {
             update_timestamp_season(pool, instance_name, id, season).await
         }
     }
@@ -204,6 +204,50 @@ async fn update_timestamp_series(
     .execute(executor)
     .await?;
     Ok(())
+}
+
+pub async fn get_oldest_seasons(
+    pool: &SqlitePool,
+    instance_name: &str,
+    count: u32,
+) -> anyhow::Result<Vec<(TvdbId, u32)>> {
+    query!(
+        r#"SELECT tvdb_id AS "tvdb_id: TvdbId", season AS "season: u32"
+        FROM sonarr
+        WHERE instance_name = $1
+        ORDER BY last_check ASC
+        LIMIT $2"#,
+        instance_name,
+        &count
+    )
+    .map(|r| (r.tvdb_id, r.season))
+    .fetch_all(pool)
+    .await
+    .with_context(|| "failed querying database")
+}
+
+pub async fn get_oldest_series(
+    pool: &SqlitePool,
+    instance_name: &str,
+    count: u32,
+) -> anyhow::Result<Vec<TvdbId>> {
+    query!(
+        r#"
+        SELECT tvdb_id AS "tvdb_id!: TvdbId", MIN(COALESCE(last_check, $1)) AS last_check
+        FROM sonarr
+        WHERE instance_name = $2
+        GROUP BY tvdb_id
+        ORDER BY last_check ASC
+        LIMIT $3
+        "#,
+        DB_DATETIME_NULL_REPLACEMENT,
+        instance_name,
+        count
+    )
+    .map(|r| r.tvdb_id)
+    .fetch_all(pool)
+    .await
+    .with_context(|| "failed querying database")
 }
 
 #[cfg(test)]
@@ -549,7 +593,7 @@ mod tests {
         mark_tv_checked(
             &pool,
             INSTANCE_NAME,
-            TvCheck::Season {
+            TvMedia::Season {
                 id: TVDB_ID,
                 season: 1,
             },
@@ -587,7 +631,7 @@ mod tests {
         mark_tv_checked(
             &pool,
             INSTANCE_NAME,
-            TvCheck::Season {
+            TvMedia::Season {
                 id: TVDB_ID,
                 season: 1,
             },
@@ -625,7 +669,7 @@ mod tests {
         mark_tv_checked(
             &pool,
             INSTANCE_NAME,
-            TvCheck::Season {
+            TvMedia::Season {
                 id: TVDB_ID,
                 season: 1,
             },
@@ -660,7 +704,7 @@ mod tests {
         .await
         .unwrap();
 
-        mark_tv_checked(&pool, INSTANCE_NAME, TvCheck::Series { id: TVDB_ID })
+        mark_tv_checked(&pool, INSTANCE_NAME, TvMedia::Series { id: TVDB_ID })
             .await
             .unwrap();
 
@@ -685,5 +729,125 @@ mod tests {
                 n => panic!("unexpected season number {n}"),
             }
         }
+    }
+
+    /// If the last_check value is still null, that row must be considered older
+    /// than any row with a timestamp
+    #[sqlx::test]
+    async fn get_oldest_seasons_prioritizes_null(pool: SqlitePool) {
+        let timestamp = Utc::now();
+        let old_timestamp = timestamp - Duration::from_secs(60);
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name, last_check) VALUES
+            (1, 1, $1, $2), (2, 1, $1, $3), (2, 2, $1, null)",
+            INSTANCE_NAME,
+            timestamp,
+            old_timestamp
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let oldest = get_oldest_seasons(&pool, INSTANCE_NAME, 2).await.unwrap();
+        assert_eq!(oldest.len(), 2);
+
+        // Oldest should return the null entry first, then the `old_timestamp` entry
+        let first = oldest.first().unwrap();
+        assert_eq!(first, &(TvdbId(2), 2));
+
+        let second = oldest.get(1).unwrap();
+        assert_eq!(second, &(TvdbId(2), 1));
+    }
+
+    #[sqlx::test]
+    async fn get_oldest_seasons_has_correct_order(pool: SqlitePool) {
+        let timestamp1 = Utc::now();
+        let timestamp2 = timestamp1 + Duration::from_secs(60);
+        let timestamp3 = timestamp2 + Duration::from_secs(60);
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name, last_check) VALUES
+            (1, 1, $1, $3), (2, 1, $1, $4), (2, 2, $1, $2)",
+            INSTANCE_NAME,
+            timestamp1,
+            timestamp2,
+            timestamp3,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let oldest = get_oldest_seasons(&pool, INSTANCE_NAME, 3).await.unwrap();
+        assert_eq!(oldest.len(), 3);
+        assert_eq!(&oldest, &[(TvdbId(2), 2), (TvdbId(1), 1), (TvdbId(2), 1)]);
+    }
+
+    #[sqlx::test]
+    async fn get_oldest_series_has_correct_order(pool: SqlitePool) {
+        let timestamp1 = Utc::now();
+        let timestamp2 = timestamp1 + Duration::from_secs(60);
+        let timestamp3 = timestamp2 + Duration::from_secs(60);
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name, last_check) VALUES
+            (1, 1, $1, $3), (2, 1, $1, $4), (3, 1, $1, $2)",
+            INSTANCE_NAME,
+            timestamp1,
+            timestamp2,
+            timestamp3,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let oldest = get_oldest_series(&pool, INSTANCE_NAME, 3).await.unwrap();
+        assert_eq!(oldest.len(), 3);
+        assert_eq!(&oldest, &[TvdbId(3), TvdbId(1), TvdbId(2)]);
+    }
+
+    /// If a series has a season at timestamp 1 and 2, then the whole series is considered to have a
+    /// timestamp of `1` since that is the oldest season.
+    #[sqlx::test]
+    async fn get_oldest_series_prefers_oldest_season(pool: SqlitePool) {
+        // Create series 2 with timestamp 1,3 and series 1 with timestamp 2.
+        // Since 2 has the oldest timestamp, it should come before 2
+        let timestamp1 = Utc::now();
+        let timestamp2 = timestamp1 + Duration::from_secs(60);
+        let timestamp3 = timestamp2 + Duration::from_secs(60);
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name, last_check) VALUES
+            (1, 1, $1, $3), (2, 1, $1, $4), (2, 2, $1, $2)",
+            INSTANCE_NAME,
+            timestamp1,
+            timestamp2,
+            timestamp3,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let oldest = get_oldest_series(&pool, INSTANCE_NAME, 2).await.unwrap();
+        assert_eq!(oldest.len(), 2);
+        assert_eq!(&oldest, &[TvdbId(2), TvdbId(1)]);
+    }
+
+    /// If a series has a season with a null timestamp, that should be considered over other timestamps
+    #[sqlx::test]
+    async fn get_oldest_series_handles_null(pool: SqlitePool) {
+        // Give series 1 timestamp1, series 2 timestamp1 and null
+        let timestamp1 = Utc::now();
+        let timestamp2 = timestamp1 + Duration::from_secs(60);
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name, last_check) VALUES
+            (1, 1, $1, $2), (2, 1, $1, $3), (2, 2, $1, null)",
+            INSTANCE_NAME,
+            timestamp1,
+            timestamp2,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let oldest = get_oldest_series(&pool, INSTANCE_NAME, 2).await.unwrap();
+        assert_eq!(oldest.len(), 2);
+        assert_eq!(&oldest, &[TvdbId(2), TvdbId(1)]);
     }
 }
