@@ -1,21 +1,29 @@
+use std::collections::HashMap;
+
 use anyhow::{Context, bail};
-use arr_api::radarr::api::{Movie, TmdbId};
+use arr_api::{
+    radarr::api::{Movie, TmdbId},
+    sonarr::api::{Series, TvdbId},
+};
 use chrono::Utc;
 use sqlx::{AssertSqlSafe, SqliteExecutor, SqlitePool, query, query_scalar};
 use tokio::sync::mpsc::Receiver;
 
-use crate::db::DatabaseMessage;
+use crate::db::{
+    DatabaseMessage,
+    series::{delete_seasons, get_all_seasons, insert_seasons},
+};
 
 pub async fn start_actor(pool: SqlitePool, mut rx: Receiver<DatabaseMessage>) {
     log::trace!("DB actor spawned");
+
     while let Some(message) = rx.recv().await {
         match message {
-            DatabaseMessage::SyncMedia {
+            DatabaseMessage::SyncMovies {
                 instance_name,
-                media,
+                movies,
             } => {
-                // TODO: handle different instance types (2 message types?)
-                if let Err(e) = sync_movies(&pool, &instance_name, &media).await {
+                if let Err(e) = sync_movies(&pool, &instance_name, &movies).await {
                     log::error!("Unable to sync movies");
                     log::debug!("ERROR: unable to sync movies: {e:#}");
                 }
@@ -32,6 +40,15 @@ pub async fn start_actor(pool: SqlitePool, mut rx: Receiver<DatabaseMessage>) {
                 if let Err(e) = update_checked_timestamp(&pool, &instance_name, &ids).await {
                     log::error!("Unable to check movies");
                     log::debug!("ERROR: unable to check movies: {e}");
+                }
+            }
+            DatabaseMessage::SyncSeries {
+                instance_name,
+                series,
+            } => {
+                if let Err(e) = sync_series(&pool, &instance_name, &series).await {
+                    log::error!("Unable to sync series");
+                    log::debug!("ERROR: unable to sync series: {e:#}");
                 }
             }
         }
@@ -65,7 +82,7 @@ async fn sync_movies(
         .await
         .with_context(|| "failed to start transaction")?;
 
-    let db_movies = get_all_movie_ids(pool, instance_name)
+    let db_movies = get_all_movie_ids(&mut *tx, instance_name)
         .await
         .with_context(|| "failed to fetch existing movies from db")?;
 
@@ -132,6 +149,7 @@ async fn delete_movies(
         .collect::<Vec<_>>()
         .join(", ");
 
+    // TODO: rewrite using QueryBuilder
     // SAFETY: IDs can only be integers, and the user provided value is never directly added to the
     // string. No injection possible
     let sql = format!(
@@ -191,6 +209,7 @@ async fn update_checked_timestamp(
         .collect::<Vec<_>>()
         .join(", ");
 
+    // TODO: rewrite using QueryBuilder
     // SAFETY: IDs can only be integers, and the user provided value is never directly added to the
     // string. No injection possible
     let sql = format!(
@@ -210,18 +229,94 @@ async fn update_checked_timestamp(
     Ok(())
 }
 
+async fn sync_series(
+    pool: &SqlitePool,
+    instance_name: &str,
+    series: &[Series],
+) -> anyhow::Result<()> {
+    let mut tx = pool
+        .begin()
+        .await
+        .with_context(|| "failed to start transaction")?;
+
+    let monitored_series = filter_monitored_seasons(series);
+    let db_series = get_all_seasons(&mut *tx, instance_name).await?;
+
+    // Find series/seasons in the monitored payload but not in the DB
+    for (&id, seasons) in monitored_series.iter() {
+        match db_series.get(&id) {
+            Some(db_seasons) => {
+                // Exclude seasons already in DB
+                let missing_seasons = seasons
+                    .iter()
+                    .filter(|&monitored_season| !db_seasons.contains(monitored_season))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                insert_seasons(&mut *tx, instance_name, id, &missing_seasons).await?;
+            }
+            None => {
+                // Insert all seasons into db
+                insert_seasons(&mut *tx, instance_name, id, seasons).await?;
+            }
+        }
+    }
+
+    // Find series/seasons in the DB but not in the monitored payload
+    for (series_id, db_seasons) in db_series {
+        match monitored_series.get(&series_id) {
+            Some(monitored_seasons) => {
+                let deleted_seasons = db_seasons
+                    .iter()
+                    .filter(|&db_season| !monitored_seasons.contains(db_season))
+                    .cloned()
+                    .collect::<Vec<_>>();
+                delete_seasons(&mut *tx, instance_name, series_id, &deleted_seasons).await?;
+            }
+            None => {
+                // Not monitored at all, delete whole series
+                delete_seasons(&mut *tx, instance_name, series_id, &db_seasons).await?;
+            }
+        }
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Convert a list of [Series] to a `HashMap<TvdbId, Vec<u32>`, with the list of `u32` corresponding
+/// to the monitored season of the *monitored* series.
+fn filter_monitored_seasons(series: &[Series]) -> HashMap<TvdbId, Vec<u32>> {
+    let mut result = HashMap::new();
+    for serie in series.iter().filter(|s| s.monitored) {
+        let monitored_seasons: Vec<_> = serie
+            .seasons
+            .iter()
+            .filter(|s| s.monitored)
+            .map(|s| s.season_number)
+            .collect();
+        if !monitored_seasons.is_empty() {
+            result.insert(serie.tvdb_id, monitored_seasons);
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
-    use arr_api::radarr::api::RadarrId;
+    use arr_api::{
+        radarr::api::RadarrId,
+        sonarr::api::{Season, SonarrId},
+    };
 
     use super::*;
+
+    const INSTANCE_NAME: &str = "instance";
 
     /// When adding new movies, ensure that "adding" an existing row doesn't wipe its existing timestamp
     #[sqlx::test]
     async fn test_sync_movies_doesnt_overwrite(pool: SqlitePool) {
-        const INSTANCE_NAME: &str = "instance";
         let timestamp = Utc::now();
         query!(
             r#"
@@ -276,7 +371,6 @@ mod tests {
     /// When adding new movies, ensure that we don't add unmonitored movies
     #[sqlx::test]
     async fn test_sync_movies_doesnt_add_unmonitored(pool: SqlitePool) {
-        const INSTANCE_NAME: &str = "instance";
         sync_movies(
             &pool,
             INSTANCE_NAME,
@@ -313,7 +407,6 @@ mod tests {
     /// longer present
     #[sqlx::test]
     async fn test_sync_movies_clears_unmonitored_removed(pool: SqlitePool) {
-        const INSTANCE_NAME: &str = "instance";
         query!(
             r#"
             INSERT INTO radarr (tmdb_id, instance_name, last_check)
@@ -365,7 +458,6 @@ mod tests {
     /// returned first.
     #[sqlx::test]
     async fn test_fetch_oldest_prioritizes_null_timestamp(pool: SqlitePool) {
-        const INSTANCE_NAME: &str = "instance";
         let oldest = Utc::now();
         let newest = oldest + Duration::from_secs(60);
         query!(
@@ -399,7 +491,6 @@ mod tests {
     /// timestamps are updated to the newest value. Also ensure other rows are not modified.
     #[sqlx::test]
     async fn test_update_checked_timestamp_overwrites_provided(pool: SqlitePool) {
-        const INSTANCE_NAME: &str = "instance";
         let old_timestamp = Utc::now() - Duration::from_mins(60);
         query!(
             r#"
@@ -445,5 +536,261 @@ mod tests {
         }
     }
 
-    // TODO: deletion tests
+    #[sqlx::test]
+    async fn sync_series_adds_new_series(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+        let series = [Series {
+            id: SonarrId(0),
+            tvdb_id: ID,
+            title: "".into(),
+            monitored: true,
+            seasons: vec![Season {
+                season_number: 1,
+                monitored: true,
+            }],
+        }];
+
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        let seasons = series.get(&ID).expect("entry should exsit");
+        assert_eq!(seasons, &[1]);
+    }
+
+    #[sqlx::test]
+    async fn sync_series_adds_new_seasons_to_existing_series(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+
+        // Insert existing series
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name) VALUES
+            ($1, 1, $2), ($1, 2, $2)",
+            ID,
+            INSTANCE_NAME
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert extra seasons
+        let series = [Series {
+            id: SonarrId(0),
+            tvdb_id: ID,
+            title: "".into(),
+            monitored: true,
+            seasons: vec![
+                Season {
+                    season_number: 1,
+                    monitored: true,
+                },
+                Season {
+                    season_number: 2,
+                    monitored: true,
+                },
+                Season {
+                    season_number: 3,
+                    monitored: true,
+                },
+                Season {
+                    season_number: 4,
+                    monitored: true,
+                },
+            ],
+        }];
+
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        let seasons = series.get(&ID).expect("entry should exsit");
+        assert_eq!(seasons, &[1, 2, 3, 4]);
+    }
+
+    #[sqlx::test]
+    async fn sync_series_keeps_existing_timestamp(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+
+        let timestamp = Utc::now();
+        // Insert existing series
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, last_check, instance_name) VALUES
+            ($1, 1, $2, $3)",
+            ID,
+            timestamp,
+            INSTANCE_NAME
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert extra seasons
+        let series = [Series {
+            id: SonarrId(0),
+            tvdb_id: ID,
+            title: "".into(),
+            monitored: true,
+            seasons: vec![
+                Season {
+                    season_number: 1,
+                    monitored: true,
+                },
+                Season {
+                    season_number: 2,
+                    monitored: true,
+                },
+            ],
+        }];
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        let mut seasons = series.get(&ID).expect("entry should exist").clone();
+        seasons.sort();
+        assert_eq!(seasons, &[1, 2]);
+
+        // Assert that DB still has timestamp for pre-existing season
+        let db_timestamp = query_scalar!(
+            r#"
+            SELECT last_check FROM sonarr WHERE
+            instance_name = $1 AND tvdb_id = $2 AND season = 1"#,
+            INSTANCE_NAME,
+            ID
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert_eq!(db_timestamp, Some(timestamp.naive_utc()));
+    }
+
+    #[sqlx::test]
+    async fn sync_series_deletes_unmonitored_season(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+
+        // Insert existing series
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name) VALUES
+            ($1, 1, $2), ($1, 2, $2)",
+            ID,
+            INSTANCE_NAME
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Season two now unmonitored
+        let series = [Series {
+            id: SonarrId(0),
+            tvdb_id: ID,
+            title: "".into(),
+            monitored: true,
+            seasons: vec![
+                Season {
+                    season_number: 1,
+                    monitored: true,
+                },
+                Season {
+                    season_number: 2,
+                    monitored: false,
+                },
+            ],
+        }];
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        let seasons = series.get(&ID).expect("entry should exsit");
+        assert_eq!(seasons, &[1]);
+    }
+
+    #[sqlx::test]
+    async fn sync_series_deletes_unmonitored_series(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+
+        // Insert existing series
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name) VALUES
+            ($1, 1, $2), ($1, 2, $2)",
+            ID,
+            INSTANCE_NAME
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Whole series is now unmonitored
+        let series = [Series {
+            id: SonarrId(0),
+            tvdb_id: ID,
+            title: "".into(),
+            monitored: false,
+            seasons: vec![
+                Season {
+                    season_number: 1,
+                    monitored: true,
+                },
+                Season {
+                    season_number: 2,
+                    monitored: true,
+                },
+            ],
+        }];
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        assert!(!series.contains_key(&ID));
+    }
+
+    #[sqlx::test]
+    async fn sync_series_deletes_removed_season(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+
+        // Insert existing series
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name) VALUES
+            ($1, 1, $2), ($1, 2, $2)",
+            ID,
+            INSTANCE_NAME
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Season two no longer exists
+        let series = [Series {
+            id: SonarrId(0),
+            tvdb_id: ID,
+            title: "".into(),
+            monitored: true,
+            seasons: vec![Season {
+                season_number: 1,
+                monitored: true,
+            }],
+        }];
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        let seasons = series.get(&ID).expect("entry should exsit");
+        assert_eq!(seasons, &[1]);
+    }
+
+    #[sqlx::test]
+    async fn sync_series_deletes_removed_series(pool: SqlitePool) {
+        const ID: TvdbId = TvdbId(1);
+
+        // Insert existing series
+        query!(
+            "INSERT INTO sonarr (tvdb_id, season, instance_name) VALUES
+            ($1, 1, $2), ($1, 2, $2)",
+            ID,
+            INSTANCE_NAME
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Series no longer exists
+        let series = [];
+        sync_series(&pool, INSTANCE_NAME, &series).await.unwrap();
+
+        let series = get_all_seasons(&pool, INSTANCE_NAME).await.unwrap();
+        assert!(series.is_empty());
+    }
 }

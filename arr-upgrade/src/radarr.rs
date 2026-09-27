@@ -72,7 +72,7 @@ async fn radarr_handler(
         // Next time, will have to wait for schedule
         wait_for_schedule = true;
         if let Err(e) = search_movies(name.clone(), client.clone(), &db_actor, count).await {
-            log::error!("Error searching movies for radarr-{}: {e:#}", name);
+            log::error!("radarr-{name}: error searching movies: {e:#}");
         }
     }
 }
@@ -146,12 +146,9 @@ async fn sync_movies(
         .list_movies()
         .await
         .with_context(|| "failed to get movie list from radarr")?;
-    log::info!(
-        "radarr-{name}: found {} movies on radarr-{name}",
-        movies.len()
-    );
+    log::info!("radarr-{name}: found {} movies", movies.len());
 
     let movies = Arc::new(movies);
-    db_actor.sync_media(name, movies.clone()).await;
+    db_actor.sync_movies(name, movies.clone()).await;
     Ok(movies)
 }

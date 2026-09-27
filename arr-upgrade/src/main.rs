@@ -49,6 +49,7 @@ async fn main() -> anyhow::Result<()> {
         start_sonarr_handler(
             name,
             client,
+            db_actor.clone(),
             instance.count,
             schedule,
             instance.search_granularity,

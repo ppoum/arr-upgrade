@@ -5,6 +5,7 @@ use serde::{Serialize, de::DeserializeOwned};
 use thiserror::Error;
 
 pub mod radarr;
+pub mod sonarr;
 
 pub(crate) trait RequestPayload: Clone {
     fn add_to_request(&self, request_builder: RequestBuilder) -> RequestBuilder;

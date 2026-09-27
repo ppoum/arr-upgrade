@@ -1,16 +1,20 @@
 use std::{str::FromStr, sync::Arc};
 
 use anyhow::Context;
-use arr_api::radarr::api::{Movie, TmdbId};
+use arr_api::{
+    radarr::api::{Movie, TmdbId},
+    sonarr::api::Series,
+};
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::sync::mpsc::{self, Sender};
 
 mod actor;
+mod series;
 
 enum DatabaseMessage {
-    SyncMedia {
+    SyncMovies {
         instance_name: String,
-        media: Arc<Vec<Movie>>,
+        movies: Arc<Vec<Movie>>,
     },
     GetOldestMovies {
         instance_name: String,
@@ -20,6 +24,10 @@ enum DatabaseMessage {
     MarkMoviesChecked {
         instance_name: String,
         ids: Vec<TmdbId>,
+    },
+    SyncSeries {
+        instance_name: String,
+        series: Arc<Vec<Series>>,
     },
 }
 
@@ -45,21 +53,23 @@ pub async fn start_db(url: String) -> anyhow::Result<DatabaseActor> {
 pub struct DatabaseActor(Sender<DatabaseMessage>);
 
 pub trait DatabaseActorMethods {
-    /// Sync arr media to database
-    async fn sync_media(&self, instance_name: String, media: Arc<Vec<Movie>>);
+    /// Sync radarr movies to database
+    async fn sync_movies(&self, instance_name: String, movies: Arc<Vec<Movie>>);
 
     /// Returns the `count` oldest movies in the database for the specified instance
     async fn get_oldest_movies(&self, instance_name: String, count: u32) -> Option<Vec<TmdbId>>;
 
     /// Updates the checked timestamp for the provided movies
     async fn mark_movies_checked(&self, instance_name: String, ids: Vec<TmdbId>);
+
+    async fn sync_series(&self, instance_name: String, series: Arc<Vec<Series>>);
 }
 
 impl DatabaseActorMethods for DatabaseActor {
-    async fn sync_media(&self, instance_name: String, media: Arc<Vec<Movie>>) {
-        let msg = DatabaseMessage::SyncMedia {
+    async fn sync_movies(&self, instance_name: String, movies: Arc<Vec<Movie>>) {
+        let msg = DatabaseMessage::SyncMovies {
             instance_name,
-            media,
+            movies,
         };
 
         let _ = self.0.send(msg).await;
@@ -79,6 +89,14 @@ impl DatabaseActorMethods for DatabaseActor {
 
     async fn mark_movies_checked(&self, instance_name: String, ids: Vec<TmdbId>) {
         let msg = DatabaseMessage::MarkMoviesChecked { instance_name, ids };
+        let _ = self.0.send(msg).await;
+    }
+
+    async fn sync_series(&self, instance_name: String, series: Arc<Vec<Series>>) {
+        let msg = DatabaseMessage::SyncSeries {
+            instance_name,
+            series,
+        };
         let _ = self.0.send(msg).await;
     }
 }
