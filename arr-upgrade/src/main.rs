@@ -1,4 +1,8 @@
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    str::FromStr,
+    time::Duration,
+};
 
 use anyhow::Context;
 use arr_api::{radarr::RadarrClient, sonarr::SonarrClient};
@@ -25,6 +29,11 @@ async fn main() -> anyhow::Result<()> {
 
     let config_dir = std::env::var(CONFIG_DIR_ENVVAR)
         .with_context(|| format!("failed to read config directory from {CONFIG_DIR_ENVVAR}"))?;
+
+    if !Path::new(&config_dir).exists() {
+        std::fs::create_dir_all(&config_dir)
+            .with_context(|| "failed to create config directory at {config_path}")?;
+    }
 
     let db_actor = db::start_db(format!("sqlite://{}/arr_upgrade.db", config_dir)).await?;
 

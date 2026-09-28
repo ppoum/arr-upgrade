@@ -1,4 +1,4 @@
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, io, path::Path};
 
 use anyhow::Context;
 use serde::Deserialize;
@@ -118,7 +118,21 @@ impl Config {
 }
 
 pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
-    let contents = std::fs::read(path).with_context(|| "failed to read config")?;
+    let contents = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            log::error!("Config file not found, is this the first start?");
+            log::error!(
+                "Generating a default config file, please edit it before restarting the app"
+            );
+            let default = include_bytes!("../../config.sample.toml");
+            std::fs::write(path, default)
+                .with_context(|| "failed to write default config to {path}")?;
+            std::process::exit(1);
+        }
+        Err(e) => return Err(e).with_context(|| "failed to read config"),
+    };
+
     toml::from_slice(&contents).with_context(|| "failed to parse config")
 }
 
