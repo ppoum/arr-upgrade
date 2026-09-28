@@ -1,0 +1,6 @@
+target/
+.git/
+.gitignore
+Justfile
+flake.nix
+flake.lock

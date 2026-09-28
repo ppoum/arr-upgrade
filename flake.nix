@@ -28,7 +28,10 @@
       devShells.${system}.default = pkgs.mkShell {
         packages = with pkgs; [
           rust-bin.stable.${rustVersion}.complete
+          buildah
           cargo-nextest
+          just
+          podman
           sqlx-cli
         ];
         shellHook = ''

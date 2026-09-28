@@ -1,0 +1,33 @@
+{
+  "db_name": "SQLite",
+  "query": "\n        SELECT tvdb_id AS \"tvdb_id!: TvdbId\", MIN(COALESCE(last_check, $1)) AS last_check\n        FROM sonarr\n        WHERE instance_name = $2\n        GROUP BY tvdb_id\n        ORDER BY last_check ASC\n        LIMIT $3\n        ",
+  "describe": {
+    "columns": [
+      {
+        "name": "tvdb_id!: TvdbId",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "sonarr",
+            "name": "tvdb_id"
+          }
+        }
+      },
+      {
+        "name": "last_check",
+        "ordinal": 1,
+        "type_info": "Datetime",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "4085aa49b0bad769538e5545c6273875b9aaecf62a7d39b2c5c0667cf612faf2"
+}

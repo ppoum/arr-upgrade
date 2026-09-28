@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE sonarr SET last_check = $1\n        WHERE instance_name = $2 AND tvdb_id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "487febaf5dc3db49130a5e23463b53539cae2a21bce114fb80c92e7be8014ae2"
+}

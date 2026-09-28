@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT OR IGNORE\n            INTO radarr (instance_name, tmdb_id)\n            VALUES ($1, $2)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "98cdf6850b6f7dc8d4f877e2044aa964759a87b8889520e335763c70908b4b1e"
+}

@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT tmdb_id\n        AS \"tmdb_id: TmdbId\"\n        FROM radarr\n        WHERE instance_name = $1\n        ORDER BY last_check ASC\n        LIMIT $2",
+  "describe": {
+    "columns": [
+      {
+        "name": "tmdb_id: TmdbId",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "radarr",
+            "name": "tmdb_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cdb2dfde60b84db1b2f6411858f0f0153e18d62aa32d4051a84676c11c5b1520"
+}
