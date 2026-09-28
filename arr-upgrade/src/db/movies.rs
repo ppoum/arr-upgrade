@@ -1,7 +1,7 @@
 use anyhow::{Context, bail};
 use arr_api::radarr::api::{Movie, TmdbId};
 use chrono::Utc;
-use sqlx::{AssertSqlSafe, SqliteExecutor, SqlitePool, query, query_scalar};
+use sqlx::{QueryBuilder, SqliteExecutor, SqlitePool, query, query_scalar};
 
 /// Returns a list of all tracked movie IDs for an instance
 async fn get_all_movie_ids(
@@ -89,24 +89,17 @@ async fn delete_movies(
     if ids.is_empty() {
         return Ok(());
     }
-    // Expand n ? into (?, ?, ...)
-    let placeholder = std::iter::repeat_n("?".to_owned(), ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
 
-    // TODO: rewrite using QueryBuilder
-    // SAFETY: IDs can only be integers, and the user provided value is never directly added to the
-    // string. No injection possible
-    let sql = format!(
-        "DELETE FROM radarr WHERE instance_name = ? AND tmdb_id IN ({})",
-        placeholder
-    );
-
-    let mut query = sqlx::query(AssertSqlSafe(sql)).bind(instance_name);
-
+    let mut query_builder = QueryBuilder::new("DELETE FROM radarr WHERE instance_name = ");
+    query_builder.push_bind(instance_name);
+    query_builder.push(" AND tmdb_id IN (");
+    let mut separated = query_builder.separated(", ");
     for id in ids {
-        query = query.bind(id);
+        separated.push_bind(id);
     }
+    separated.push_unseparated(")");
+
+    let query = query_builder.build();
     query.execute(executor).await?;
     Ok(())
 }
@@ -149,27 +142,18 @@ pub async fn update_checked_timestamp(
         return Ok(());
     }
 
-    // Expand n ? into (?, ?, ...)
-    let placeholder = std::iter::repeat_n("?".to_owned(), ids.len())
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    // TODO: rewrite using QueryBuilder
-    // SAFETY: IDs can only be integers, and the user provided value is never directly added to the
-    // string. No injection possible
-    let sql = format!(
-        "UPDATE radarr SET last_check = ? WHERE instance_name = ? AND tmdb_id IN ({})",
-        placeholder
-    );
-
-    let mut query = sqlx::query(AssertSqlSafe(sql))
-        .bind(timestamp)
-        .bind(instance_name);
-
+    let mut query_builder = QueryBuilder::new("UPDATE radarr SET last_check = ");
+    query_builder.push_bind(timestamp);
+    query_builder.push(" WHERE instance_name = ");
+    query_builder.push_bind(instance_name);
+    query_builder.push(" AND tmdb_id IN (");
+    let mut separated = query_builder.separated(", ");
     for id in ids {
-        query = query.bind(id);
+        separated.push_bind(id);
     }
+    separated.push_unseparated(")");
 
+    let query = query_builder.build();
     query.execute(executor).await?;
     Ok(())
 }
