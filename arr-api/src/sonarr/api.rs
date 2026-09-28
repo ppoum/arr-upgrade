@@ -47,6 +47,14 @@ pub struct Series {
     pub seasons: Vec<Season>,
 }
 
+impl Series {
+    pub fn has_season_number(&self, season_number: u32) -> bool {
+        self.seasons
+            .iter()
+            .any(|season| season.season_number == season_number)
+    }
+}
+
 impl Display for Series {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{} ({})", self.title, self.tvdb_id.0)
@@ -117,6 +125,44 @@ impl ArrRequest for SeriesSearchRequest {
         Cow::Owned(Json(SeriesSearchParams {
             name: "SeriesSearch".to_owned(),
             series_id: self.0,
+        }))
+    }
+}
+
+pub(super) struct SeasonSearchRequest {
+    pub series_id: SonarrId,
+    pub season_number: u32,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct SeasonSearchParams {
+    name: String,
+    series_id: SonarrId,
+    season_number: u32,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct SeasonSearchResponse {
+    pub id: CommandId,
+}
+
+impl ArrRequest for SeasonSearchRequest {
+    type Params = Json<SeasonSearchParams>;
+
+    type Response = SeasonSearchResponse;
+
+    const METHOD: reqwest::Method = reqwest::Method::POST;
+
+    fn to_url(&self) -> Cow<'_, str> {
+        "/api/v3/command".into()
+    }
+
+    fn params(&self) -> Cow<'_, Self::Params> {
+        Cow::Owned(Json(SeasonSearchParams {
+            name: "SeasonSearch".to_owned(),
+            series_id: self.series_id,
+            season_number: self.season_number,
         }))
     }
 }

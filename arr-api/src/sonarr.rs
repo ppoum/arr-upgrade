@@ -7,7 +7,8 @@ use crate::{
     ArrError, Client, RequestPayloadExt,
     sonarr::api::{
         AllSeriesRequest, ApiInfoRequest, ApiInfoResponse, CommandId, CommandInfo,
-        CommandInfoRequest, CommandResult, CommandStatus, Series, SeriesSearchRequest, SonarrId,
+        CommandInfoRequest, CommandResult, CommandStatus, SeasonSearchRequest, Series,
+        SeriesSearchRequest, SonarrId,
     },
 };
 
@@ -66,6 +67,19 @@ impl SonarrClient {
         self.send(SeriesSearchRequest(id))
             .await
             .map(|response| response.id)
+    }
+
+    pub async fn search_season(
+        &self,
+        series_id: SonarrId,
+        season_number: u32,
+    ) -> Result<CommandId, ArrError> {
+        self.send(SeasonSearchRequest {
+            series_id,
+            season_number,
+        })
+        .await
+        .map(|response| response.id)
     }
 
     pub async fn get_command_info(&self, id: CommandId) -> Result<CommandInfo, ArrError> {

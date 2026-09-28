@@ -16,7 +16,7 @@ use crate::{
     db::{DatabaseActor, DatabaseActorMethods},
 };
 
-const _SONARR_SEASON_SEARCH_TIMEOUT: Duration = Duration::from_mins(10);
+const SONARR_SEASON_SEARCH_TIMEOUT: Duration = Duration::from_mins(10);
 const SONARR_SERIES_SEARCH_TIMEOUT: Duration = Duration::from_mins(20);
 const HANDLER_ERROR_RETRY_DELAY: Duration = Duration::from_mins(5);
 
@@ -89,7 +89,9 @@ async fn sonarr_handler(
             SonarrSearchGranularity::Show => {
                 search_series(name.clone(), count, client.clone(), &db_actor).await
             }
-            SonarrSearchGranularity::Season => unimplemented!(),
+            SonarrSearchGranularity::Season => {
+                search_seasons(name.clone(), count, client.clone(), &db_actor).await
+            }
         };
         if let Err(e) = result {
             log::error!("sonarr-{name}: error during search: {e:#}");
@@ -141,9 +143,73 @@ async fn search_series(
                     .mark_series_checked(name.clone(), series.tvdb_id)
                     .await;
             }
-            other => log::warn!("sonarr-{name}: search for series failed - {other}"),
+            other => log::warn!("sonarr-{name}: search for series {series} failed - {other}"),
         }
     }
+    Ok(())
+}
+
+async fn search_seasons(
+    name: String,
+    count: u32,
+    client: Arc<SonarrClient>,
+    db_actor: &DatabaseActor,
+) -> anyhow::Result<()> {
+    let series = sync_series(name.clone(), &client, db_actor).await?;
+    let oldest_ids = db_actor
+        .get_oldest_seasons(name.clone(), count)
+        .await
+        .with_context(|| "failed to get oldest seasons from database")?;
+
+    let season_cnt = oldest_ids.len();
+    let mut handles = Vec::with_capacity(season_cnt);
+
+    // Map [TvdbId] to full [Series] object *if* it exists and has the specified season
+    let oldest_seasons = series.iter().filter_map(|series| {
+        match oldest_ids.iter().find(|(id, _)| series.tvdb_id == *id) {
+            Some((id, season_number)) if series.has_season_number(*season_number) => {
+                Some((series, *season_number))
+            }
+            _ => None,
+        }
+    });
+    for (series, season_number) in oldest_seasons {
+        log::debug!("sonarr-{name}: starting search for {series} season {season_number}");
+        let client = client.clone();
+        let id = series.id;
+        let handle = tokio::spawn(async move {
+            let command_id = client
+                .search_season(id, season_number)
+                .await
+                .with_context(|| "failed to start series search")?;
+            client
+                .block_for_command_execution(command_id, Some(SONARR_SEASON_SEARCH_TIMEOUT))
+                .await
+                .with_context(|| "error waiting for command to complete")
+        });
+        handles.push((series, season_number, handle));
+    }
+
+    for (series, season_number, handle) in handles {
+        let result = handle
+            .await
+            .with_context(|| "search command failed to execute")?;
+
+        match result.with_context(|| "search command failed to complete")? {
+            CommandResult::Successful => {
+                log::info!(
+                    "sonarr-{name}: successfully search for {series} season {season_number}"
+                );
+                db_actor
+                    .mark_season_checked(name.clone(), series.tvdb_id, season_number)
+                    .await;
+            }
+            other => log::warn!(
+                "sonarr-{name}: search for series {series} season {season_number} failed - {other}"
+            ),
+        }
+    }
+
     Ok(())
 }
 
