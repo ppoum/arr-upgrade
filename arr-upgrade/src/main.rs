@@ -4,9 +4,14 @@ use std::{
     time::Duration,
 };
 
-use anyhow::Context;
+use anyhow::{Context, bail};
 use arr_api::{radarr::RadarrClient, sonarr::SonarrClient};
 use cron::Schedule;
+use tokio::{
+    select,
+    signal::unix::{SignalKind, signal},
+};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{radarr::start_radarr_handler, sonarr::start_sonarr_handler};
 
@@ -22,6 +27,7 @@ const FREQ_NATURAL_VALUES: [(&str, &str); 4] = [
     ("weekly", "0 0 0 * * 0"),
     ("monthly", "0 0 0 1 * *"),
 ];
+const SHUTDOWN_TIMEOUT_DURATION: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -35,7 +41,15 @@ async fn main() -> anyhow::Result<()> {
             .with_context(|| "failed to create config directory at {config_path}")?;
     }
 
-    let db_actor = db::start_db(format!("sqlite://{}/arr_upgrade.db", config_dir)).await?;
+    let cancel_token = CancellationToken::new();
+    let tracker = TaskTracker::new();
+
+    let db_actor = db::start_db(
+        format!("sqlite://{}/arr_upgrade.db", config_dir),
+        &tracker,
+        cancel_token.clone(),
+    )
+    .await?;
 
     let config_file_path = PathBuf::from(config_dir.clone()).join("config.toml");
     let config = config::load_config(config_file_path)?;
@@ -45,9 +59,17 @@ async fn main() -> anyhow::Result<()> {
         let schedule = parse_schedule(instance.frequency)
             .with_context(|| format!("invalid frequency for radarr-{name}"))
             .unwrap();
-        start_radarr_handler(name, client, db_actor.clone(), instance.count, schedule)
-            .await
-            .with_context(|| "failed to start radarr instance")?;
+        start_radarr_handler(
+            name,
+            client,
+            db_actor.clone(),
+            instance.count,
+            schedule,
+            &tracker,
+            cancel_token.clone(),
+        )
+        .await
+        .with_context(|| "failed to start radarr instance")?;
     }
 
     for (name, instance) in config.get_sonarr_instances() {
@@ -62,14 +84,44 @@ async fn main() -> anyhow::Result<()> {
             instance.count,
             schedule,
             instance.search_granularity,
+            &tracker,
+            cancel_token.clone(),
         )
         .await
         .with_context(|| "failed to start sonarr instance")?;
     }
 
-    loop {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+    setup_signal_handlers(cancel_token.clone());
+
+    tracker.close();
+    cancel_token.cancelled().await;
+
+    log::info!("Gracefully shutting down...");
+
+    select! {
+        _ = tokio::time::sleep(SHUTDOWN_TIMEOUT_DURATION) => {
+            bail!("Timed out waiting for tasks to shutdown")
+        }
+        _ = tracker.wait() => {
+            log::info!("Gracefully stopped all tasks");
+            Ok(())
+        }
     }
+}
+
+/// Configures the SIGTERM and SIGINT signal handlers to cancel the [CancellationToken]
+fn setup_signal_handlers(cancel_token: CancellationToken) {
+    tokio::spawn(async move {
+        let mut sigint =
+            signal(SignalKind::interrupt()).expect("Failed to configure SIGINT handler");
+        let mut sigterm =
+            signal(SignalKind::terminate()).expect("Failed to configure SIGTERM handler");
+        select! {
+            _ = sigint.recv() => {}
+            _ = sigterm.recv() => {}
+        }
+        cancel_token.cancel();
+    });
 }
 
 /// Converts the frequency config value to a cron schedule. Handles the supported natural language cases

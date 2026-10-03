@@ -7,6 +7,9 @@ use arr_api::radarr::{
 };
 use chrono::Local;
 use cron::Schedule;
+use lib::sleep_or_cancel;
+use tokio::select;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::db::{DatabaseActor, DatabaseActorMethods};
 
@@ -21,12 +24,21 @@ pub async fn start_radarr_handler(
     db_actor: DatabaseActor,
     count: u32,
     schedule: Schedule,
+    tracker: &TaskTracker,
+    cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
     if count == 0 {
         bail!("count must be greater than 0");
     }
 
-    tokio::spawn(radarr_handler(name, client, db_actor, count, schedule));
+    tracker.spawn(radarr_handler(
+        name,
+        client,
+        db_actor,
+        count,
+        schedule,
+        cancel_token,
+    ));
     Ok(())
 }
 
@@ -36,12 +48,13 @@ async fn radarr_handler(
     db_actor: DatabaseActor,
     count: u32,
     schedule: Schedule,
+    cancel_token: CancellationToken,
 ) {
     log::info!("Started radarr-{name}");
     let client = Arc::new(client);
 
     let mut wait_for_schedule = false;
-    loop {
+    while !cancel_token.is_cancelled() {
         if wait_for_schedule {
             if let Some(next) = schedule.upcoming(Local).next() {
                 // If err, duration was less than 0, can assume we need to instantly execute
@@ -51,30 +64,41 @@ async fn radarr_handler(
                     next,
                     duration.as_secs()
                 );
-                tokio::time::sleep(duration).await;
+                if sleep_or_cancel(duration, &cancel_token).await.is_err() {
+                    break;
+                }
             } else {
                 log::warn!(
                     "radarr-{name}: unable to find next scheduled occurrence, retrying in 5 minutes"
                 );
                 wait_for_schedule = false;
-                tokio::time::sleep(Duration::from_mins(5)).await;
+                let _ = sleep_or_cancel(Duration::from_mins(5), &cancel_token).await;
                 continue;
             };
-        }
+        };
 
         if let Err(e) = client.check().await {
             log::error!("radarr-{name}: connection failed, retrying in 5 minutes. {e}");
             wait_for_schedule = false;
-            tokio::time::sleep(HANDLER_ERROR_RETRY_DELAY).await;
+            let _ = sleep_or_cancel(HANDLER_ERROR_RETRY_DELAY, &cancel_token).await;
             continue;
         }
 
         // Next time, will have to wait for schedule
         wait_for_schedule = true;
-        if let Err(e) = search_movies(name.clone(), client.clone(), &db_actor, count).await {
+        if let Err(e) = search_movies(
+            name.clone(),
+            client.clone(),
+            &db_actor,
+            count,
+            &cancel_token,
+        )
+        .await
+        {
             log::error!("radarr-{name}: error searching movies: {e:#}");
         }
     }
+    log::debug!("radarr-{name}: shutting down actor");
 }
 
 /// Main search execution loop - updates internal state for instance and starts search
@@ -83,6 +107,7 @@ async fn search_movies(
     client: Arc<RadarrClient>,
     db_actor: &DatabaseActor,
     count: u32,
+    cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
     let movies = sync_movies(name.clone(), &client, db_actor).await?;
 
@@ -119,9 +144,13 @@ async fn search_movies(
     // Get result for jobs
     let mut searched_ids = Vec::with_capacity(movie_cnt);
     for (movie, handle) in handles {
-        let result = handle
-            .await
-            .with_context(|| "search command failed to execute")?;
+        // NOTE: waiting for jobs can be quite slow, and we must take the cancel token into
+        // consideration here
+        let result = select! {
+            result = handle => { result.with_context(|| "search command failed to execute") }
+            // If cancelled, return early
+            _ = cancel_token.cancelled() => return Ok(())
+        }?;
 
         match result.with_context(|| "search command failed to complete")? {
             CommandResult::Successful => {

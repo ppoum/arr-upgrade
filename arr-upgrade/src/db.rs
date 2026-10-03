@@ -5,8 +5,10 @@ use arr_api::{
     radarr::api::{Movie, TmdbId},
     sonarr::api::{Series, TvdbId},
 };
+use lib::try_receive_message;
 use sqlx::{SqlitePool, sqlite::SqliteConnectOptions};
 use tokio::sync::mpsc::{self, Receiver, Sender};
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::db::{
     movies::{fetch_n_oldest_movies, sync_movies, update_checked_timestamp},
@@ -59,7 +61,11 @@ enum TvMedia {
     Season { id: TvdbId, season: u32 },
 }
 
-pub async fn start_db(url: String) -> anyhow::Result<DatabaseActor> {
+pub async fn start_db(
+    url: String,
+    tracker: &TaskTracker,
+    cancel_token: CancellationToken,
+) -> anyhow::Result<DatabaseActor> {
     let connection_options = SqliteConnectOptions::from_str(&url)
         .with_context(|| "failed to parse DB connection string")?
         .create_if_missing(true);
@@ -72,7 +78,7 @@ pub async fn start_db(url: String) -> anyhow::Result<DatabaseActor> {
         .with_context(|| "failed to migrate db")?;
 
     let (tx, rx) = mpsc::channel(64);
-    tokio::spawn(start_actor(pool, rx));
+    tracker.spawn(start_actor(pool, rx, cancel_token));
 
     Ok(DatabaseActor(tx))
 }
@@ -188,10 +194,25 @@ impl DatabaseActorMethods for DatabaseActor {
     }
 }
 
-async fn start_actor(pool: SqlitePool, mut rx: Receiver<DatabaseMessage>) {
+async fn start_actor(
+    pool: SqlitePool,
+    mut rx: Receiver<DatabaseMessage>,
+    cancel_token: CancellationToken,
+) {
     log::trace!("DB actor spawned");
 
-    while let Some(message) = rx.recv().await {
+    loop {
+        let message = match try_receive_message(&mut rx, &cancel_token).await {
+            Ok(Some(message)) => message,
+            Ok(None) => {
+                log::error!("DB channel unexpectedly closed, stopping actor");
+                break;
+            }
+            Err(_) => {
+                log::debug!("Shutting down DB actor");
+                break;
+            }
+        };
         match message {
             DatabaseMessage::SyncMovies {
                 instance_name,

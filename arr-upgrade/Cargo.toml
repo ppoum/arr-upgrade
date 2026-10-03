@@ -3,6 +3,10 @@ name = "arr-upgrade"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "lib"
+path = "src/lib.rs"
+
 [dependencies]
 anyhow = "1.0.104"
 arr-api = { path = "../arr-api/" }
@@ -20,7 +24,13 @@ sqlx = { version = "0.9.0", features = [
   "runtime-tokio",
   "sqlite",
 ] }
-tokio = { version = "1.53.1", features = ["macros", "rt-multi-thread", "sync"] }
+tokio = { version = "1.53.1", features = [
+  "macros",
+  "rt-multi-thread",
+  "signal",
+  "sync",
+] }
+tokio-util = { version = "0.7.19", features = ["rt"] }
 toml = "1.1.6"
 
 [dev-dependencies]

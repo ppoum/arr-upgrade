@@ -10,6 +10,9 @@ use arr_api::sonarr::{
 };
 use chrono::Local;
 use cron::Schedule;
+use lib::sleep_or_cancel;
+use tokio::select;
+use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 use crate::{
     config::SonarrSearchGranularity,
@@ -20,6 +23,7 @@ const SONARR_SEASON_SEARCH_TIMEOUT: Duration = Duration::from_mins(10);
 const SONARR_SERIES_SEARCH_TIMEOUT: Duration = Duration::from_mins(20);
 const HANDLER_ERROR_RETRY_DELAY: Duration = Duration::from_mins(5);
 
+#[expect(clippy::too_many_arguments)]
 pub async fn start_sonarr_handler(
     name: String,
     client: SonarrClient,
@@ -27,18 +31,21 @@ pub async fn start_sonarr_handler(
     count: u32,
     schedule: Schedule,
     granularity: SonarrSearchGranularity,
+    tracker: &TaskTracker,
+    cancel_token: CancellationToken,
 ) -> anyhow::Result<()> {
     if count == 0 {
         bail!("count must be greated than 0");
     }
 
-    tokio::spawn(sonarr_handler(
+    tracker.spawn(sonarr_handler(
         name,
         client,
         db_actor,
         count,
         schedule,
         granularity,
+        cancel_token,
     ));
     Ok(())
 }
@@ -50,12 +57,13 @@ async fn sonarr_handler(
     count: u32,
     schedule: Schedule,
     granularity: SonarrSearchGranularity,
+    cancel_token: CancellationToken,
 ) {
     log::info!("Started sonarr-{name}");
     let client = Arc::new(client);
 
     let mut wait_for_schedule = false;
-    loop {
+    while !cancel_token.is_cancelled() {
         if wait_for_schedule {
             if let Some(next) = schedule.upcoming(Local).next() {
                 // If err, duration was less than 0, can assume we need to instantly execute
@@ -65,13 +73,15 @@ async fn sonarr_handler(
                     next,
                     duration.as_secs()
                 );
-                tokio::time::sleep(duration).await;
+                if sleep_or_cancel(duration, &cancel_token).await.is_err() {
+                    break;
+                }
             } else {
                 log::warn!(
                     "radarr-{name}: unable to find next scheduled occurrence, retrying in 5 minutes"
                 );
                 wait_for_schedule = false;
-                tokio::time::sleep(Duration::from_mins(5)).await;
+                let _ = sleep_or_cancel(Duration::from_mins(5), &cancel_token).await;
                 continue;
             };
         }
@@ -79,7 +89,7 @@ async fn sonarr_handler(
         if let Err(e) = client.check().await {
             log::error!("radarr-{name}: connection failed, retrying in 5 minutes. {e}");
             wait_for_schedule = false;
-            tokio::time::sleep(HANDLER_ERROR_RETRY_DELAY).await;
+            let _ = sleep_or_cancel(HANDLER_ERROR_RETRY_DELAY, &cancel_token).await;
             continue;
         }
 
@@ -87,16 +97,31 @@ async fn sonarr_handler(
         wait_for_schedule = true;
         let result = match granularity {
             SonarrSearchGranularity::Show => {
-                search_series(name.clone(), count, client.clone(), &db_actor).await
+                search_series(
+                    name.clone(),
+                    count,
+                    client.clone(),
+                    &db_actor,
+                    &cancel_token,
+                )
+                .await
             }
             SonarrSearchGranularity::Season => {
-                search_seasons(name.clone(), count, client.clone(), &db_actor).await
+                search_seasons(
+                    name.clone(),
+                    count,
+                    client.clone(),
+                    &db_actor,
+                    &cancel_token,
+                )
+                .await
             }
         };
         if let Err(e) = result {
             log::error!("sonarr-{name}: error during search: {e:#}");
         }
     }
+    log::debug!("sonarr-{name}: shutting down actor");
 }
 
 async fn search_series(
@@ -104,6 +129,7 @@ async fn search_series(
     count: u32,
     client: Arc<SonarrClient>,
     db_actor: &DatabaseActor,
+    cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
     let series = sync_series(name.clone(), &client, db_actor).await?;
     let oldest_ids = db_actor
@@ -133,9 +159,13 @@ async fn search_series(
     }
 
     for (series, handle) in handles {
-        let result = handle
-            .await
-            .with_context(|| "search command failed to execute")?;
+        // NOTE: waiting for jobs can be quite slow, and we must take the cancel token into
+        // consideration here
+        let result = select! {
+            result = handle => { result.with_context(|| "search command failed to execute") }
+            // If cancelled, return early
+            _ = cancel_token.cancelled() => return Ok(())
+        }?;
         match result.with_context(|| "search command failed to complete")? {
             CommandResult::Successful => {
                 log::info!("sonarr-{name}: successfully searched for {series}");
@@ -154,6 +184,7 @@ async fn search_seasons(
     count: u32,
     client: Arc<SonarrClient>,
     db_actor: &DatabaseActor,
+    cancel_token: &CancellationToken,
 ) -> anyhow::Result<()> {
     let series = sync_series(name.clone(), &client, db_actor).await?;
     let oldest_ids = db_actor
@@ -191,9 +222,13 @@ async fn search_seasons(
     }
 
     for (series, season_number, handle) in handles {
-        let result = handle
-            .await
-            .with_context(|| "search command failed to execute")?;
+        // NOTE: waiting for jobs can be quite slow, and we must take the cancel token into
+        // consideration here
+        let result = select! {
+            result = handle => { result.with_context(|| "search command failed to execute") }
+            // If cancelled, return early
+            _ = cancel_token.cancelled() => return Ok(())
+        }?;
 
         match result.with_context(|| "search command failed to complete")? {
             CommandResult::Successful => {
