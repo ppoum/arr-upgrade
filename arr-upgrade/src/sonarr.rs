@@ -69,7 +69,7 @@ async fn sonarr_handler(
                 // If err, duration was less than 0, can assume we need to instantly execute
                 let duration = (next - Local::now()).to_std().unwrap_or_default();
                 log::debug!(
-                    "radarr-{name}: sleeping until {} - {}s",
+                    "sonarr-{name}: sleeping until {} - {}s",
                     next,
                     duration.as_secs()
                 );
@@ -78,7 +78,7 @@ async fn sonarr_handler(
                 }
             } else {
                 log::warn!(
-                    "radarr-{name}: unable to find next scheduled occurrence, retrying in 5 minutes"
+                    "sonarr-{name}: unable to find next scheduled occurrence, retrying in 5 minutes"
                 );
                 wait_for_schedule = false;
                 let _ = sleep_or_cancel(Duration::from_mins(5), &cancel_token).await;
@@ -87,7 +87,7 @@ async fn sonarr_handler(
         }
 
         if let Err(e) = client.check().await {
-            log::error!("radarr-{name}: connection failed, retrying in 5 minutes. {e}");
+            log::error!("sonarr-{name}: connection failed, retrying in 5 minutes. {e}");
             wait_for_schedule = false;
             let _ = sleep_or_cancel(HANDLER_ERROR_RETRY_DELAY, &cancel_token).await;
             continue;
