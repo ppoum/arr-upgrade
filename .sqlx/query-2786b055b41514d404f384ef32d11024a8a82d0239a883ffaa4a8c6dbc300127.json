@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            INSERT INTO radarr (tmdb_id, instance_name, last_check)\n            VALUES\n            (1, $1, $3),   -- newest\n            (2, $1, $2),   -- oldest\n            (3, $1, null), -- no time\n            (4, $1, $3),   -- newest\n            (5, $1, null)  -- no time\n            ",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2786b055b41514d404f384ef32d11024a8a82d0239a883ffaa4a8c6dbc300127"
+}
