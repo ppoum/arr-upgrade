@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT tmdb_id, last_check FROM radarr",
+  "describe": {
+    "columns": [
+      {
+        "name": "tmdb_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "radarr",
+            "name": "tmdb_id"
+          }
+        }
+      },
+      {
+        "name": "last_check",
+        "ordinal": 1,
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "radarr",
+            "name": "last_check"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "c74641e7b88ffc4fdb12aa5209688f820af4dfe648f9da3a3f7d042c30005d9d"
+}

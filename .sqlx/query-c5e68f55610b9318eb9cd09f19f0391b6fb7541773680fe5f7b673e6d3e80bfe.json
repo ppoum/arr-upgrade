@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT last_check FROM sonarr WHERE\n            instance_name = $1 AND tvdb_id = $2 AND season = 1",
+  "describe": {
+    "columns": [
+      {
+        "name": "last_check",
+        "ordinal": 0,
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "sonarr",
+            "name": "last_check"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "c5e68f55610b9318eb9cd09f19f0391b6fb7541773680fe5f7b673e6d3e80bfe"
+}

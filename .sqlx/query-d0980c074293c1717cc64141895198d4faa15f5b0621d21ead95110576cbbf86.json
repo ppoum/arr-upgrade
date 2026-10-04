@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO sonarr (tvdb_id, season, instance_name, last_check) VALUES\n            ($1, 1, $2, null)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "d0980c074293c1717cc64141895198d4faa15f5b0621d21ead95110576cbbf86"
+}

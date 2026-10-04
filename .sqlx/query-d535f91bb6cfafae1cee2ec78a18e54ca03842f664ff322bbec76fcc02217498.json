@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "\n            SELECT tmdb_id, last_check FROM radarr\n            WHERE instance_name = $1\n            ",
+  "describe": {
+    "columns": [
+      {
+        "name": "tmdb_id",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "radarr",
+            "name": "tmdb_id"
+          }
+        }
+      },
+      {
+        "name": "last_check",
+        "ordinal": 1,
+        "type_info": "Datetime",
+        "origin": {
+          "Table": {
+            "table": "radarr",
+            "name": "last_check"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "d535f91bb6cfafae1cee2ec78a18e54ca03842f664ff322bbec76fcc02217498"
+}
