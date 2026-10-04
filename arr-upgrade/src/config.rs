@@ -63,6 +63,7 @@ pub struct Config {
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct DefaultSection {
+    debug: bool,
     frequency: String,
     count: u32,
     search_granularity: SonarrSearchGranularity,
@@ -71,6 +72,7 @@ struct DefaultSection {
 impl Default for DefaultSection {
     fn default() -> Self {
         Self {
+            debug: false,
             frequency: DEFAULT_FREQUENCY.into(),
             count: DEFAULT_COUNT,
             search_granularity: DEFAULT_GRANULARITY,
@@ -79,6 +81,10 @@ impl Default for DefaultSection {
 }
 
 impl Config {
+    pub fn debug_log_level(&self) -> bool {
+        self.default.debug
+    }
+
     pub fn get_radarr_instances(&self) -> HashMap<String, RadarrInstance> {
         self.radarr
             .clone()
@@ -121,10 +127,8 @@ pub fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
     let contents = match std::fs::read(&path) {
         Ok(b) => b,
         Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            log::error!("Config file not found, is this the first start?");
-            log::error!(
-                "Generating a default config file, please edit it before restarting the app"
-            );
+            eprintln!("Config file not found, is this the first start?");
+            eprintln!("Generating a default config file, please edit it before restarting the app");
             let default = include_bytes!("../../config.sample.toml");
             std::fs::write(path, default)
                 .with_context(|| "failed to write default config to {path}")?;
@@ -156,6 +160,21 @@ mod tests {
     fn config_can_parse_empty() {
         let file = create_config("".to_owned()).unwrap();
         load_config(file.path()).expect("parsing shouldn't fail");
+    }
+
+    /// Default log level should not be debug
+    #[test]
+    fn config_uses_default_log_level() {
+        let file = create_config("".to_owned()).unwrap();
+        let config = load_config(file.path()).expect("parsing shouldn't fail");
+        assert!(!config.debug_log_level())
+    }
+
+    #[test]
+    fn config_can_parse_debug_log_level() {
+        let file = create_config("[default]\ndebug = true".into()).unwrap();
+        let config = load_config(file.path()).expect("parsing shouldn't fail");
+        assert!(config.debug_log_level())
     }
 
     /// Ensure no regression in config parsing

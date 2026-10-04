@@ -1,24 +1,23 @@
-use std::{
-    path::{Path, PathBuf},
-    str::FromStr,
-    time::Duration,
-};
+use std::{path::Path, str::FromStr, time::Duration};
 
 use anyhow::{Context, bail};
 use arr_api::{radarr::RadarrClient, sonarr::SonarrClient};
 use cron::Schedule;
+use log::LevelFilter;
 use tokio::{
     select,
     signal::unix::{SignalKind, signal},
 };
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
-use crate::{radarr::start_radarr_handler, sonarr::start_sonarr_handler};
+use crate::{config::Config, radarr::start_radarr_handler, sonarr::start_sonarr_handler};
 
 mod config;
 mod db;
 mod radarr;
 mod sonarr;
+
+const CRATE_NAME: &str = env!("CARGO_CRATE_NAME");
 
 const CONFIG_DIR_ENVVAR: &str = "ARR_UPGRADE_CONFIG";
 const FREQ_NATURAL_VALUES: [(&str, &str); 4] = [
@@ -31,18 +30,21 @@ const SHUTDOWN_TIMEOUT_DURATION: Duration = Duration::from_secs(10);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    env_logger::init();
+    let cancel_token = CancellationToken::new();
+    let tracker = TaskTracker::new();
 
     let config_dir = std::env::var(CONFIG_DIR_ENVVAR)
         .with_context(|| format!("failed to read config directory from {CONFIG_DIR_ENVVAR}"))?;
+    let config = load_config(&config_dir)?;
 
-    if !Path::new(&config_dir).exists() {
-        std::fs::create_dir_all(&config_dir)
-            .with_context(|| "failed to create config directory at {config_path}")?;
-    }
-
-    let cancel_token = CancellationToken::new();
-    let tracker = TaskTracker::new();
+    let log_level = if config.debug_log_level() {
+        LevelFilter::Debug
+    } else {
+        LevelFilter::Info
+    };
+    env_logger::Builder::new()
+        .filter_module(CRATE_NAME, log_level)
+        .init();
 
     let db_actor = db::start_db(
         format!("sqlite://{}/arr_upgrade.db", config_dir),
@@ -50,9 +52,6 @@ async fn main() -> anyhow::Result<()> {
         cancel_token.clone(),
     )
     .await?;
-
-    let config_file_path = PathBuf::from(config_dir.clone()).join("config.toml");
-    let config = config::load_config(config_file_path)?;
 
     for (name, instance) in config.get_radarr_instances() {
         let client = RadarrClient::new(instance.url, instance.api_key);
@@ -107,6 +106,18 @@ async fn main() -> anyhow::Result<()> {
             Ok(())
         }
     }
+}
+
+/// Load the config file, or create & exit if it doesn't exist
+fn load_config(config_dir: impl AsRef<Path>) -> anyhow::Result<Config> {
+    // Create config directory if needed
+    if !Path::new(config_dir.as_ref()).exists() {
+        std::fs::create_dir_all(config_dir.as_ref())
+            .with_context(|| "failed to create config directory at {config_path}")?;
+    }
+
+    let config_file_path = config_dir.as_ref().to_owned().join("config.toml");
+    config::load_config(config_file_path)
 }
 
 /// Configures the SIGTERM and SIGINT signal handlers to cancel the [CancellationToken]

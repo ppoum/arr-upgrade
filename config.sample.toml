@@ -1,5 +1,7 @@
 # If a value is not specified for an individual instance, then the default value is used.
 [default]
+# Optional fields
+debug = false
 frequency = "hourly"
 count = 5
 search_granularity = "season"
@@ -7,18 +9,26 @@ search_granularity = "season"
 [radarr.foo]
 url = "http://127.0.0.1:7878"
 api_key = "1234567890abcdef"
-frequency = "hourly|daily|weekly|monthly" # or cron syntax: "0 0 0 1 * *"
 
+# Optional fields
+frequency = "hourly|daily|weekly|monthly" # or cron syntax: "0 0 0 1 * *"
+count = 5
+
+# Multiple radarr instances can be defined
 [radarr.bar]
 url = "http://127.0.0.1:7879"
 api_key = "1234567890abcdef"
-count = 5
 
 [sonarr.fizz]
 url = "http://127.0.0.1:8989"
 api_key = "1234567890abcdef"
 
+# Optional fields
+frequency = "hourly|daily|weekly|monthly"
+count = 5
+search_granularity = "show"
+
+# Multiple sonarr instances can be defined
 [sonarr.buzz]
 url = "http://127.0.0.1:8989"
 api_key = "1234567890abcdef"
-search_granularity = "show"
