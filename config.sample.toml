@@ -30,5 +30,5 @@ search_granularity = "show"
 
 # Multiple sonarr instances can be defined
 [sonarr.buzz]
-url = "http://127.0.0.1:8989"
+url = "http://127.0.0.1:8990"
 api_key = "1234567890abcdef"
