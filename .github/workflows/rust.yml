@@ -9,6 +9,7 @@ env:
   SQLX_OFFLINE: true
 jobs:
   build:
+    name: rust-build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

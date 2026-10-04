@@ -1,4 +1,4 @@
-name: Manually Build and Publish Container Image
+name: Build and Publish Container Image
 on:
   workflow_dispatch:
 env:
@@ -11,9 +11,9 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: Get version from Cargo.toml
-        run: awk -F '"' '/version[[:space:]]*=/{print "CRATE_VERSION=" $2;}' arr-upgrade/Cargo.toml >> $GITHUB_ENV
       - uses: actions/checkout@v4
+      - name: Get version from Cargo.toml
+        run: awk -F '"' '/^version[[:space:]]*=/{print "CRATE_VERSION=" $2;}' arr-upgrade/Cargo.toml >> $GITHUB_ENV
       - name: Setup docker buildx
         uses: docker/setup-buildx-action@v4
       - name: Authenticate to GHCR
